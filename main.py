@@ -249,6 +249,48 @@ class PromptCardsPlugin(Star):
         if expired:
             self._save()
 
+    # ---------- 采样参数（温度 / 输出上限） ----------
+    def _effective_sampling(self, umo: str):
+        """返回 (温度, 温度来源卡, 输出上限, 上限来源卡)。
+
+        每个参数独立取优先级最高（数字最小）的设定卡；都没设则全为 None。
+        """
+        temp = tsrc = mt = msrc = None
+        for n in self._active_names(umo):
+            card = self._cards.get(n, {})
+            if temp is None and card.get("temperature") is not None:
+                temp, tsrc = card["temperature"], n
+            if mt is None and card.get("max_tokens") is not None:
+                mt, msrc = card["max_tokens"], n
+            if temp is not None and mt is not None:
+                break
+        return temp, tsrc, mt, msrc
+
+    def _apply_sampling(self, req, umo: str) -> None:
+        """把生效卡片的采样设定写进 LLM 请求；没设定则跟随人格/模型默认。"""
+        temp, _tsrc, mt, _msrc = self._effective_sampling(umo)
+        if temp is None and mt is None:
+            return
+        try:
+            if temp is not None:
+                self._set_req_param(req, "temperature", float(temp))
+            if mt is not None:
+                self._set_req_param(req, "max_tokens", int(mt))
+        except Exception as e:
+            logger.warning("[prompt_cards] 采样参数写入失败: %s", e)
+
+    def _set_req_param(self, req, key: str, value) -> None:
+        """兼容不同 AstrBot 版本的请求对象：优先写 dataclass 字段，退而写 model_config。"""
+        if hasattr(req, key):
+            setattr(req, key, value)
+        elif hasattr(req, "model_config") and isinstance(getattr(req, "model_config"), dict):
+            req.model_config[key] = value
+        else:
+            if not getattr(self, "_sampling_warned", False):
+                self._sampling_warned = True
+                logger.warning("[prompt_cards] 当前 AstrBot 的请求对象不含 %s 字段，"
+                               "卡片采样设定未生效（建议升级 AstrBot）", key)
+
     # ---------- 指令入口 ----------
     @filter.command("卡")
     async def cmd_card(self, event: AstrMessageEvent):
@@ -268,6 +310,7 @@ class PromptCardsPlugin(Star):
                 "预设：/卡 预设 查看内置模板 ｜ /卡 导入 名字 一键入卡（「导入 全部」全要）\n"
                 "管理（管理员）：/卡 add 名字 内容 ／ set ／ kw 名字 词1,词2（支持 re:正则）\n"
                 "　　　　　　　　／ pri 名字 数字 ／ del 名字 ／ 全局 on|off 名字\n"
+                "参数（管理员）：/卡 温度 名字 0.7 ｜ /卡 长度 名字 800（留空清除）\n"
                 "卡片内容支持变量：{user} {time} {date} {weekday}，注入时自动替换\n"
                 "关键词卡：命中关键词的会话自动启用该卡，N 条消息后自动失效（面板可调）")
             return
@@ -282,6 +325,10 @@ class PromptCardsPlugin(Star):
                     sorted(self._cards.items(), key=lambda kv: kv[1].get("priority", 50)), 1):
                 kws = "、".join(card.get("keywords") or []) or "无"
                 flag = "" if card.get("enabled", True) else "（已全局停用）"
+                extra = (f"｜温度{card['temperature']}"
+                         if card.get("temperature") is not None else "")
+                extra += (f"｜上限{card['max_tokens']}"
+                          if card.get("max_tokens") is not None else "")
                 if card.get("global"):
                     state = "🌐全局生效"
                 elif name in sess:
@@ -289,7 +336,7 @@ class PromptCardsPlugin(Star):
                 else:
                     state = "未启用"
                 lines.append(f"{i}. {name}｜优先级{card.get('priority', 50)}｜"
-                             f"关键词:{kws}｜{state}{flag}")
+                             f"关键词:{kws}｜{state}{flag}{extra}")
             yield event.plain_result("\n".join(lines))
             return
 
@@ -301,9 +348,13 @@ class PromptCardsPlugin(Star):
                 return
             card = self._cards[real]
             kws = "、".join(card.get("keywords") or []) or "无"
+            extra = (f"｜温度{card['temperature']}"
+                     if card.get("temperature") is not None else "")
+            extra += (f"｜上限{card['max_tokens']}tokens"
+                      if card.get("max_tokens") is not None else "")
             yield event.plain_result(
                 f"🃏 {real}｜优先级{card.get('priority', 50)}｜"
-                f"{'启用' if card.get('enabled', True) else '全局停用'}｜关键词:{kws}\n"
+                f"{'启用' if card.get('enabled', True) else '全局停用'}｜关键词:{kws}{extra}\n"
                 f"————————\n{card.get('content', '')}")
             return
 
@@ -447,6 +498,64 @@ class PromptCardsPlugin(Star):
                 f"✅ 「{real}」已改为{'全局生效（所有会话默认启用）' if on else '仅手动启用'}")
             return
 
+        if sub in ("温度", "temp"):
+            if not self._is_admin(event):
+                yield event.plain_result("⚠️ 仅管理员可以设定温度")
+                return
+            name, _, val = rest.partition(" ")
+            real = self._find_card(name.strip())
+            if not real:
+                yield event.plain_result(f"没有叫「{name.strip()}」的卡片，/卡 list 查看")
+                return
+            val = val.strip()
+            if not val:
+                self._cards[real].pop("temperature", None)
+                self._save()
+                yield event.plain_result(f"✅ 已清除「{real}」的温度（跟随人格/模型默认）")
+                return
+            try:
+                temp = float(val)
+                if not 0 <= temp <= 2:
+                    raise ValueError
+            except ValueError:
+                yield event.plain_result("用法：/卡 温度 <名字> <0~2>（留空清除；越低越稳定，越高越发散）")
+                return
+            self._cards[real]["temperature"] = temp
+            self._save()
+            logger.info("[prompt_cards] %s 设定「%s」温度=%s", event.get_sender_id(), real, temp)
+            yield event.plain_result(
+                f"✅ 「{real}」温度设为 {temp}。该卡生效时与其他卡的设定冲突，"
+                f"优先级最高（数字最小）的说了算")
+            return
+
+        if sub in ("长度", "maxlen", "输出上限"):
+            if not self._is_admin(event):
+                yield event.plain_result("⚠️ 仅管理员可以设定输出长度")
+                return
+            name, _, val = rest.partition(" ")
+            real = self._find_card(name.strip())
+            if not real:
+                yield event.plain_result(f"没有叫「{name.strip()}」的卡片，/卡 list 查看")
+                return
+            val = val.strip()
+            if not val:
+                self._cards[real].pop("max_tokens", None)
+                self._save()
+                yield event.plain_result(f"✅ 已清除「{real}」的输出上限（跟随人格/模型默认）")
+                return
+            try:
+                mt = int(val)
+                if mt < 1:
+                    raise ValueError
+            except ValueError:
+                yield event.plain_result("用法：/卡 长度 <名字> <tokens>（留空清除；如 /卡 长度 简洁模式 300）")
+                return
+            self._cards[real]["max_tokens"] = mt
+            self._save()
+            logger.info("[prompt_cards] %s 设定「%s」输出上限=%s", event.get_sender_id(), real, mt)
+            yield event.plain_result(f"✅ 「{real}」输出上限设为 {mt} tokens（该卡生效时生效）")
+            return
+
         if sub in ("peek", "预览"):
             injection, names = self._build_injection(umo)
             if not injection:
@@ -461,6 +570,14 @@ class PromptCardsPlugin(Star):
             note = f"（共 {len(injection)} 字，注入在人格提示词{pos}）"
             if limit and len(injection) > limit:
                 note += f"\n⚠️ 超过面板设定的 {limit} 字：上下文可能吃紧，建议精简卡片或调高上限"
+            temp, tsrc, mt, msrc = self._effective_sampling(umo)
+            if temp is not None or mt is not None:
+                parts = []
+                if temp is not None:
+                    parts.append(f"温度 {temp}（来自「{tsrc}」）")
+                if mt is not None:
+                    parts.append(f"输出上限 {mt} tokens（来自「{msrc}」）")
+                note += "\n🎛 " + "｜".join(parts)
             yield event.plain_result(
                 f"📋 本会话生效：{'、'.join(names)}{note}\n"
                 f"————————以下为注入内容————————\n{injection}")
@@ -564,8 +681,9 @@ class PromptCardsPlugin(Star):
     # ---------- LLM 请求注入 ----------
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        """把本会话生效的卡片拼接到 system prompt。"""
+        """把本会话生效的卡片拼接到 system prompt，并应用采样设定。"""
         umo = event.unified_msg_origin
+        self._apply_sampling(req, umo)
         injection, names = self._build_injection(umo)
         if not injection:
             self._tick(umo)  # 没有内容也照常倒计时，避免空内容卡片永不过期
