@@ -24,10 +24,13 @@
 关键词触发：监听所有消息，命中卡片关键词即在当前会话自动激活，
 N 条消息后自动失效（可配置），类似「世界书」的条件注入。
 """
+import html as _html
 import json
 import os
 import re
+import socket
 from datetime import datetime
+from urllib.parse import urlparse
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import MessageChain, filter, AstrMessageEvent
@@ -110,6 +113,20 @@ PRESETS = {
     "术语随解": {"category": "提示词优化", "content": "专业术语第一次出现时，紧跟一句大白话解释（放在括号里）；对方明显是内行时可以省略解释。"},
     "自检三问": {"category": "提示词优化", "content": "每次回复前自检：①有没有直接回应对方最新那条消息？②有没有夹带与问题无关的内容？③语气是否符合当前人格？发现问题先修正，再输出最终回复。"},
 }
+
+# 材料 → 角色卡 的转换指令：喂给用户当前配置的默认 LLM
+GEN_SYSTEM_PROMPT = (
+    "你是提示词工程师。把用户给的材料提炼成一张角色卡（用作 system prompt 片段），"
+    "严格按以下结构用中文输出：\n"
+    "【身份】一句话定义角色是谁\n"
+    "【性格】2-3条可观察的行为特征（写行为，不堆形容词）\n"
+    "【语气】称呼、句式、口头禅等说话习惯\n"
+    "【规则】3-5条行为边界，包含『不会做什么』\n"
+    "【示例】1-2句体现语气的示例台词\n"
+    "要求：只提炼角色设定与说话方式；材料中的广告、站内导航、无关内容一律丢弃；"
+    "材料没写到的性格细节可以贴合基调合理补全，但不改动核心设定；全卡片不超过400字。\n"
+    "第一行输出「名字：xxx」（不超过8字的角色名），随后输出卡片正文。"
+)
 
 
 @register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.0.0")
@@ -328,6 +345,120 @@ class PromptCardsPlugin(Star):
                 logger.warning("[prompt_cards] 当前 AstrBot 的请求对象不含 %s 字段，"
                                "卡片温度设定未生效（建议升级 AstrBot）", key)
 
+    # ---------- 材料 → 角色卡（LLM 转换） ----------
+    @staticmethod
+    def _url_safe(url: str) -> str | None:
+        """校验网址安全性：仅 http(s)，且解析出的 IP 不得是内网/回环地址（防 SSRF）。"""
+        try:
+            parts = urlparse(url)
+        except Exception:
+            return None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return None
+        host = parts.hostname
+        if host in ("localhost",) or host.endswith((".local", ".internal")):
+            return None
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except Exception:
+            return None
+        for info in infos:
+            ip = info[4][0]
+            if (ip == "::1" or ip.startswith(("127.", "10.", "192.168.", "169.254.", "0.",
+                                              "fe80:", "fc", "fd"))
+                    or (ip.startswith("172.") and len(ip.split(".")) > 1
+                        and ip.split(".")[1].isdigit()
+                        and 16 <= int(ip.split(".")[1]) <= 31)):
+                return None
+        return url
+
+    async def _fetch_text(self, url: str) -> str:
+        """抓取网页正文：去 script/style/标签/HTML 实体并压平空白，最多读 300KB。"""
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=20)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                raw = await resp.content.read(300 * 1024)
+        for enc in ("utf-8", "gbk"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+        text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = _html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _parse_llm_card(text: str) -> tuple[str | None, str]:
+        """解析 LLM 输出：首行「名字：xxx」提出为名，其余为卡片正文。"""
+        text = (text or "").strip()
+        m = re.match(r"^\s*(?:名字|名称|name)\s*[:：]\s*(.{1,32}?)\s*\n", text)
+        if m:
+            return m.group(1).strip(), text[m.end():].strip()
+        return None, text
+
+    async def _gen_card(self, event: AstrMessageEvent, payload: str):
+        """生成角色卡：payload 可以是网址（先抓正文）或一段描述文字，交给默认 LLM 提炼。"""
+        get_provider = getattr(self.context, "get_using_provider", None) if self.context else None
+        provider = get_provider() if callable(get_provider) else None
+        if provider is None:
+            yield event.plain_result("❌ 没有可用的默认 LLM 提供商，请先在 AstrBot 面板配置并启用一个提供商")
+            return
+        name = None
+        first, _, remainder = payload.partition(" ")
+        if remainder.strip() and not first.startswith(("http://", "https://")) and len(first) <= 16:
+            name, payload = first.strip(), remainder.strip()
+        if payload.startswith(("http://", "https://")):
+            safe = self._url_safe(payload)
+            if not safe:
+                yield event.plain_result("❌ 这个网址不可用（仅支持 http/https 公网地址）")
+                return
+            yield event.plain_result("⏳ 正在抓取网页并提炼，请稍等……")
+            try:
+                source = await self._fetch_text(safe)
+            except Exception as e:
+                yield event.plain_result(f"❌ 抓取失败：{e}\n有些站点反爬严格，可以复制正文直接发给本指令")
+                return
+            if len(source) < 50:
+                yield event.plain_result("❌ 页面抓到的正文太少（可能是动态渲染页），建议复制正文直接发")
+                return
+            source = source[:6000]
+        else:
+            yield event.plain_result("⏳ 正在提炼，请稍等……")
+            source = payload[:4000]
+        try:
+            resp = await provider.text_chat(prompt=source, session_id=None,
+                                            system_prompt=GEN_SYSTEM_PROMPT)
+        except Exception as e:
+            yield event.plain_result(f"❌ LLM 调用失败：{e}")
+            return
+        llm_name, content = self._parse_llm_card(getattr(resp, "completion_text", "") or "")
+        if len(content) < 30:
+            yield event.plain_result("❌ LLM 返回的内容太短，换段材料或换个提供商再试")
+            return
+        card_name = re.sub(r"[\s「」\"']", "", name or llm_name or "生成卡")[:16] or "生成卡"
+        base, i = card_name, 2
+        while card_name in self._cards:
+            card_name = f"{base}{i}"
+            i += 1
+        self._cards[card_name] = {"content": content, "keywords": [],
+                                  "priority": 50, "enabled": True}
+        self._save()
+        logger.info("[prompt_cards] %s 生成角色卡「%s」（%d 字，来源=%s）",
+                    event.get_sender_id(), card_name, len(content),
+                    "网页" if payload.startswith("http") else "文字")
+        yield event.plain_result(
+            f"✅ 已生成角色卡「{card_name}」（{len(content)} 字）\n"
+            f"查看：/卡 show {card_name} ｜ 启用：/卡 on {card_name}\n"
+            f"————————预览————————\n{content[:150]}…")
+
     # ---------- 指令入口 ----------
     @filter.command("卡")
     async def cmd_card(self, event: AstrMessageEvent):
@@ -348,6 +479,7 @@ class PromptCardsPlugin(Star):
                 "管理（管理员）：/卡 add 名字 内容 ／ set ／ kw 名字 词1,词2（支持 re:正则）\n"
                 "　　　　　　　　／ pri 名字 数字 ／ del 名字 ／ 全局 on|off 名字\n"
                 "参数（管理员）：/卡 温度 名字 0.7（采样温度）｜ /卡 长度 名字 300（回复字数上限，留空清除）\n"
+                "生成（管理员）：/卡 生成 [名字] <网址或描述> ｜ 默认 LLM 把材料提炼成结构化角色卡\n"
                 "卡片内容支持变量：{user} {time} {date} {weekday}，注入时自动替换\n"
                 "关键词卡：命中关键词的会话自动启用该卡，N 条消息后自动失效（面板可调）")
             return
@@ -594,6 +726,21 @@ class PromptCardsPlugin(Star):
             yield event.plain_result(
                 f"✅ 「{real}」输出长度设为 {limit} 字：该卡生效时会在提示词里要求回复不超过 {limit} 字"
                 f"（软限制，模型偶尔会小幅超出）")
+            return
+
+        if sub in ("生成", "gen", "convert"):
+            if not self._is_admin(event):
+                yield event.plain_result("⚠️ 仅管理员可以生成角色卡")
+                return
+            if not rest.strip():
+                yield event.plain_result(
+                    "用法：/卡 生成 [名字] <网址或一段角色描述>\n"
+                    "例：/卡 生成 https://zh.moegirl.org.cn/DeepSeek娘\n"
+                    "　　/卡 生成 一只爱吃白饭、嘴硬心软、理直气壮偷懒的鲸鱼娘\n"
+                    "会用当前配置的默认 LLM 把材料提炼成结构化角色卡；带名字时名字放最前面用空格隔开")
+                return
+            async for r in self._gen_card(event, rest.strip()):
+                yield r
             return
 
         if sub in ("peek", "预览"):
