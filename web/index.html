@@ -302,6 +302,12 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
         <button id="dDialAggr">激进</button>
       </div>
       <div class="hint" style="margin-top:6px">保守=贴紧设定少发挥；标准=跟随卡片设定；激进=大胆即兴、主动推动剧情。该卡生效时注入对应引导。</div>
+      <div class="tog" style="margin-top:8px" id="toneTog">
+        <button id="dToneRational">理性</button>
+        <button id="dToneBal" class="on">均衡</button>
+        <button id="dToneEmotional">感性</button>
+      </div>
+      <div class="hint" style="margin-top:6px">感性=情绪浓、感官与心理描写多；理性=克制精确、先结论后感受。</div>
     </div>
     <div class="f">
       <div class="pair">
@@ -517,6 +523,8 @@ function openEditor(name){
   setTog("#dModePersona", "#dModeOverlay", c ? c.mode === "persona" : false);
   setTog("#dDialSafe", "#dDialStd", c ? c.dial === "保守" : false);
   setTog("#dDialAggr", "#dDialStd", c ? c.dial === "激进" : false);
+  setTog("#dToneRational", "#dToneBal", c ? c.tone === "理性" : false);
+  setTog("#dToneEmotional", "#dToneBal", c ? c.tone === "感性" : false);
   document.querySelectorAll("[data-len]").forEach(b =>
     b.onclick = () => { $("#dLen").value = b.dataset.len; });
   $("#dDel").style.display = name ? "" : "none";
@@ -552,6 +560,8 @@ $("#dSave").onclick = async () => {
       mode: $("#dModePersona").classList.contains("on") ? "persona" : "overlay",
       dial: $("#dDialSafe").classList.contains("on") ? "保守"
           : $("#dDialAggr").classList.contains("on") ? "激进" : null,
+      tone: $("#dToneRational").classList.contains("on") ? "理性"
+          : $("#dToneEmotional").classList.contains("on") ? "感性" : null,
     })});
     toast("已保存 " + name);
     closeEditor(); load();

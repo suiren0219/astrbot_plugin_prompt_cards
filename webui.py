@@ -112,47 +112,67 @@ class CardWebUI:
         p = self.plugin
         card = dict(p._cards.get(name) or {"keywords": [], "priority": 50, "enabled": True})
         card["content"] = content
+        # 只覆盖请求体里显式出现的字段：缺席=保持原值（PATCH 语义），
+        # 显式 null/空=用户清空。否则部分保存会悄悄抹掉没提交的设定。
         if "keywords" in data:
             card["keywords"] = [str(k).strip() for k in (data.get("keywords") or [])
                                 if str(k).strip()]
-        try:
-            card["priority"] = int(data.get("priority", card.get("priority", 50)))
-        except (TypeError, ValueError):
-            card["priority"] = 50
-        temp = data.get("temperature")
-        if temp in (None, ""):
-            card.pop("temperature", None)
-        else:
+        if "priority" in data:
             try:
-                temp = float(temp)
-                if not 0 <= temp <= 2:
-                    raise ValueError
-                card["temperature"] = temp
+                card["priority"] = int(data.get("priority"))
             except (TypeError, ValueError):
-                return web.json_response({"error": "温度需在 0~2 之间"}, status=400)
-        limit = data.get("length_limit")
-        if limit in (None, ""):
-            card.pop("length_limit", None)
-        else:
-            try:
-                limit = int(limit)
-                if limit < 20:
-                    raise ValueError
-                card["length_limit"] = limit
-            except (TypeError, ValueError):
-                return web.json_response({"error": "输出长度需为不小于 20 的整数"}, status=400)
-        card["enabled"] = bool(data.get("enabled", card.get("enabled", True)))
-        card["global"] = bool(data.get("global", card.get("global", False)))
-        mode = data.get("mode")
-        if mode in ("persona", "overlay"):
-            card["mode"] = mode
-        dial = data.get("dial")
-        if dial in ("保守", "激进"):
-            card["dial"] = dial
-        elif dial in (None, "", "标准"):
-            card.pop("dial", None)
-        else:
-            return web.json_response({"error": "dial 仅支持 保守/标准/激进"}, status=400)
+                card["priority"] = 50
+        if "temperature" in data:
+            temp = data.get("temperature")
+            if temp in (None, ""):
+                card.pop("temperature", None)
+            else:
+                try:
+                    temp = float(temp)
+                    if not 0 <= temp <= 2:
+                        raise ValueError
+                    card["temperature"] = temp
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "温度需在 0~2 之间"}, status=400)
+        if "length_limit" in data:
+            limit = data.get("length_limit")
+            if limit in (None, ""):
+                card.pop("length_limit", None)
+            else:
+                try:
+                    limit = int(limit)
+                    if limit < 20:
+                        raise ValueError
+                    card["length_limit"] = limit
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "输出长度需为不小于 20 的整数"}, status=400)
+        if "enabled" in data:
+            card["enabled"] = bool(data.get("enabled"))
+        if "global" in data:
+            card["global"] = bool(data.get("global"))
+        if "mode" in data:
+            if data.get("mode") in ("persona", "overlay"):
+                card["mode"] = data.get("mode")
+            elif data.get("mode") in (None, "", "overlay"):
+                card.pop("mode", None)
+            else:
+                return web.json_response({"error": "mode 仅支持 persona/overlay"}, status=400)
+        if "dial" in data:
+            dial = data.get("dial")
+            if dial in ("保守", "激进"):
+                card["dial"] = dial
+            elif dial in (None, "", "标准"):
+                card.pop("dial", None)
+            else:
+                return web.json_response({"error": "dial 仅支持 保守/标准/激进"}, status=400)
+        if "tone" in data:
+            tone = data.get("tone")
+            if tone in ("理性", "感性"):
+                card["tone"] = tone
+            elif tone in (None, "", "均衡"):
+                card.pop("tone", None)
+            else:
+                return web.json_response({"error": "tone 仅支持 理性/均衡/感性"}, status=400)
         p._cards[name] = card
         p._save()
         self.logger.info("[prompt_cards] WebUI 保存卡片「%s」（%d 字）", name, len(content))
