@@ -146,6 +146,13 @@ class CardWebUI:
         mode = data.get("mode")
         if mode in ("persona", "overlay"):
             card["mode"] = mode
+        dial = data.get("dial")
+        if dial in ("保守", "激进"):
+            card["dial"] = dial
+        elif dial in (None, "", "标准"):
+            card.pop("dial", None)
+        else:
+            return web.json_response({"error": "dial 仅支持 保守/标准/激进"}, status=400)
         p._cards[name] = card
         p._save()
         self.logger.info("[prompt_cards] WebUI 保存卡片「%s」（%d 字）", name, len(content))

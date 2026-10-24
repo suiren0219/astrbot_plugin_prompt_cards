@@ -148,8 +148,23 @@ GEN_SYSTEM_PROMPT = (
     "第一行输出「名字：xxx」（不超过8字的角色名），随后输出卡片正文。"
 )
 
+# 发挥度分档（仿角色扮演 App 的 保守/标准/激进 三选一）：
+# 注入的是提示词引导，不是采样参数，更与模型安全策略无关——只控制即兴程度。
+DIAL_PRESETS = {
+    "保守": "【发挥度】保守模式：贴紧事实与当前角色设定，少即兴发挥；"
+            "不确定的内容直说不确定，不主动编造情节。",
+    "标准": "",  # 标准档不注入任何文字，跟随卡片本身设定
+    "激进": "【发挥度】激进模式：可以大胆即兴发挥，主动推动话题或剧情，"
+            "制造合理的转折与惊喜；拿不准的细节允许合理虚构，但必须贴合角色。",
+}
+DIAL_ALIASES = {"保守": "保守", "标准": "标准", "激进": "激进",
+                "safe": "保守", "normal": "标准", "standard": "标准", "aggressive": "激进"}
+# 回复长度分档（简短/适中/冗长 → 字数）
+LENGTH_PRESETS = {"简短": 80, "适中": 200, "冗长": 500}
+LENGTH_LABELS = {v: k for k, v in LENGTH_PRESETS.items()}
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.2.0")
+
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.3.0")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -350,6 +365,9 @@ class PromptCardsPlugin(Star):
                 content = ("【角色扮演】接下来是一条完整的角色设定。"
                            "若它与其他系统设定中的人设描述冲突，一律以本条为准；"
                            "请完全以此角色的身份、性格和语气回应。\n" + content)
+            dial = DIAL_PRESETS.get(card.get("dial") or "", "")
+            if dial:
+                content += "\n" + dial
             limit = card.get("length_limit")
             if limit:
                 content += f"\n【输出长度】该卡生效期间，回复保持在 {limit} 字以内。"
@@ -547,7 +565,8 @@ class PromptCardsPlugin(Star):
                 "管理（管理员）：/卡 add 名字 内容 ／ set ／ kw 名字 词1,词2（支持 re:正则）\n"
                 "　　　　　　　　／ pri 名字 数字 ／ del 名字 ／ 全局 on|off 名字\n"
                 "　　　　　　　　／ 模式 名字 人设|叠加（人设=压过基础人格，叠加=共存）\n"
-                "参数：/卡 温度 名字 0.7（仅记录，API 暂不支持）｜ /卡 长度 名字 300（字数软限制）\n"
+                "参数：/卡 调控 名字 保守|标准|激进（发挥度）｜ /卡 长度 名字 简短|适中|冗长|字数\n"
+                "　　　/卡 温度 名字 0.7（仅记录，AstrBot API 暂不支持按会话调温）\n"
                 "生成（管理员）：/卡 生成 [名字] <网址或描述> ｜ 默认 LLM 把材料提炼成结构化角色卡\n"
                 "卡片内容支持变量：{user} {time} {date} {weekday}，注入时自动替换\n"
                 "关键词卡：命中关键词的会话自动启用该卡，N 条消息后自动失效（面板可调）")
@@ -564,6 +583,7 @@ class PromptCardsPlugin(Star):
                 kws = "、".join(card.get("keywords") or []) or "无"
                 flag = "" if card.get("enabled", True) else "（已全局停用）"
                 extra = "🎭人设" if card.get("mode") == "persona" else ""
+                extra += f"｜发挥度{card['dial']}" if card.get("dial") else ""
                 extra += (f"｜温度{card['temperature']}"
                           if card.get("temperature") is not None else "")
                 extra += (f"｜长度{card['length_limit']}字"
@@ -588,10 +608,13 @@ class PromptCardsPlugin(Star):
             card = self._cards[real]
             kws = "、".join(card.get("keywords") or []) or "无"
             mode = "🎭完全人设（压过基础人格）" if card.get("mode") == "persona" else "叠加（与基础人格共存）"
-            extra = (f"｜温度{card['temperature']}"
-                     if card.get("temperature") is not None else "")
-            extra += (f"｜长度{card['length_limit']}字"
-                      if card.get("length_limit") else "")
+            extra = f"｜发挥度{card['dial']}" if card.get("dial") else ""
+            extra += (f"｜温度{card['temperature']}"
+                      if card.get("temperature") is not None else "")
+            lim = card.get("length_limit")
+            extra += (f"｜长度{lim}字（{LENGTH_LABELS[lim]}）"
+                      if lim in LENGTH_LABELS else
+                      (f"｜长度{lim}字" if lim else ""))
             yield event.plain_result(
                 f"🃏 {real}｜优先级{card.get('priority', 50)}｜{mode}｜"
                 f"{'启用' if card.get('enabled', True) else '全局停用'}｜关键词:{kws}{extra}\n"
@@ -790,6 +813,36 @@ class PromptCardsPlugin(Star):
                 f'{{"temperature": {temp}}}（全局生效）')
             return
 
+        if sub in ("调控", "dial", "发挥度"):
+            if not self._is_admin(event):
+                yield event.plain_result("⚠️ 仅管理员可以设定发挥度")
+                return
+            name, _, val = rest.partition(" ")
+            real = self._find_card(name.strip())
+            if not real:
+                yield event.plain_result(f"没有叫「{name.strip()}」的卡片，/卡 list 查看")
+                return
+            val = val.strip()
+            if not val:
+                self._cards[real].pop("dial", None)
+                self._save()
+                yield event.plain_result(f"✅ 已清除「{real}」的发挥度（标准，不注入提示）")
+                return
+            dial = DIAL_ALIASES.get(val.lower()) or DIAL_ALIASES.get(val)
+            if not dial:
+                yield event.plain_result(
+                    "用法：/卡 调控 <名字> 保守|标准|激进（留空=标准）\n"
+                    "保守=贴紧设定少发挥；标准=跟随卡片本身设定；激进=大胆即兴、主动推动剧情。\n"
+                    "这是提示词层面的发挥度引导，与模型安全策略无关。")
+                return
+            self._cards[real]["dial"] = dial
+            self._save()
+            logger.info("[prompt_cards] %s 设定「%s」发挥度=%s", event.get_sender_id(), real, dial)
+            yield event.plain_result(
+                f"✅ 「{real}」发挥度设为「{dial}」"
+                + ("（标准：不额外注入提示）" if dial == "标准" else "（该卡生效时注入发挥度引导）"))
+            return
+
         if sub in ("长度", "len", "输出长度"):
             if not self._is_admin(event):
                 yield event.plain_result("⚠️ 仅管理员可以设定输出长度")
@@ -805,13 +858,22 @@ class PromptCardsPlugin(Star):
                 self._save()
                 yield event.plain_result(f"✅ 已清除「{real}」的输出长度（不再限制）")
                 return
+            if val in LENGTH_PRESETS:  # 分档：简短/适中/冗长
+                limit = LENGTH_PRESETS[val]
+                self._cards[real]["length_limit"] = limit
+                self._save()
+                logger.info("[prompt_cards] %s 设定「%s」输出长度=%s（%s）",
+                            event.get_sender_id(), real, limit, val)
+                yield event.plain_result(
+                    f"✅ 「{real}」回复长度设为「{val}」（约 {limit} 字），该卡生效时注入长度引导")
+                return
             try:
                 limit = int(val)
                 if limit < 20:
                     raise ValueError
             except ValueError:
                 yield event.plain_result(
-                    "用法：/卡 长度 <名字> <字数>（如 /卡 长度 简洁模式 100，最小 20；留空清除）")
+                    "用法：/卡 长度 <名字> 简短|适中|冗长 或 <字数>（如 /卡 长度 简洁模式 100，最小 20；留空清除）")
                 return
             self._cards[real]["length_limit"] = limit
             self._save()
