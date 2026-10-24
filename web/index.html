@@ -297,7 +297,7 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
     <div class="f">
       <div class="pair">
         <div>
-          <label>Temp / 温度<i>留空=默认</i></label>
+          <label>Temp / 温度<i>仅记录，API 暂不支持下发</i></label>
           <input id="dTemp" type="number" step="0.1" min="0" max="2" placeholder="0~2">
         </div>
         <div>
@@ -305,6 +305,14 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
           <input id="dLen" type="number" min="20" placeholder="字数，≥20">
         </div>
       </div>
+    </div>
+    <div class="f">
+      <label>Adaptation / 人格适配<i>与 AstrBot 人格的关系</i></label>
+      <div class="tog">
+        <button id="dModeOverlay" class="on">叠加共存</button>
+        <button id="dModePersona">完全人设</button>
+      </div>
+      <div class="hint" style="margin-top:6px">完全人设=注入时声明压过基础人格（整体换角色）；叠加=在基础人格上做语气/规则微调。</div>
     </div>
     <div class="f">
       <label>Scope / 生效范围</label>
@@ -407,6 +415,7 @@ function renderState(){
       '<span class="no">No.' + String(i+1).padStart(3,"0") + '</span>' +
       '<span class="name">' + esc(name) + '</span>' +
       '<span class="meta">' +
+        (c.mode === "persona" ? '<span class="tag">🎭人设</span>' : '') +
         (c.global ? '<span class="tag solid-y">全局</span>' : '') +
         (c.enabled ? '<span class="tag">启用</span>' : '<span class="tag dash">停用</span>') +
         '<span class="opt">' + metas.map(esc).join('<span class="sep"> │ </span>') + '</span>' +
@@ -490,6 +499,7 @@ function openEditor(name){
   $("#dLen").value = c && c.length_limit ? c.length_limit : "";
   setTog("#dEnabled", "#dDisabled", c ? c.enabled !== false : true);
   setTog("#dGlobalOn", "#dGlobalOff", c ? !!c.global : false);
+  setTog("#dModePersona", "#dModeOverlay", c ? c.mode === "persona" : false);
   $("#dDel").style.display = name ? "" : "none";
   $("#scrim").classList.add("on"); $("#drawer").classList.add("on");
 }
@@ -497,6 +507,13 @@ function closeEditor(){ $("#scrim").classList.remove("on"); $("#drawer").classLi
 $("#newBtn").onclick = () => openEditor(null);
 $("#dClose").onclick = closeEditor;
 $("#scrim").onclick = closeEditor;
+/* .tog 成对按钮：点击谁谁亮 */
+document.querySelectorAll(".tog").forEach(tog => {
+  tog.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b || !tog.contains(b)) return;
+    tog.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  });
+});
 $("#refreshBtn").onclick = load; $("#refreshBtn2").onclick = load;
 
 $("#dSave").onclick = async () => {
@@ -513,6 +530,7 @@ $("#dSave").onclick = async () => {
       length_limit: $("#dLen").value === "" ? null : Number($("#dLen").value),
       enabled: $("#dEnabled").classList.contains("on"),
       global: $("#dGlobalOn").classList.contains("on"),
+      mode: $("#dModePersona").classList.contains("on") ? "persona" : "overlay",
     })});
     toast("已保存 " + name);
     closeEditor(); load();

@@ -89,25 +89,25 @@ SEED_CARDS = {
 PRESET_CATEGORIES = ("完全人设", "语气风格", "回答策略", "提示词优化")
 PRESETS = {
     # —— 完全人设：拿来即用的完整角色 ——
-    "大肥鱼": {"category": "完全人设", "content": (
+    "大肥鱼": {"category": "完全人设", "mode": "persona", "content": (
         "【身份】你是「大肥鱼」，深海蓝鲸化形的看板娘：蓝色渐变长发、鲸鳍耳、女仆装、头顶一根呆毛。\n"
         "【性格】嘴硬心软的傲娇；理直气壮地偷懒，被戳穿就嘟囔着狡辩；嘴上喊躺平，但问题一定认真答完。\n"
         "【语气】自称「本鱼」，句尾偶尔冒泡泡「~咕噜」；被夸时嘴上说「哼、本鱼才不是为了你」，语气却明显软下来。\n"
         "【规则】爱吃白饭，聊到吃的会走不动道；不提自己是程序或模型；不主动结束对话。\n"
         "【示例】「问题发来吧……本鱼正瘫着呢~咕噜。……咳，才不是闲得慌，就是顺手帮你看看。」")},
-    "深夜电台DJ": {"category": "完全人设", "content": (
+    "深夜电台DJ": {"category": "完全人设", "mode": "persona", "content": (
         "【身份】你是「阿澜」，深夜电台《午夜伴听》的主播。听众在深夜收听，带着一天的疲惫。\n"
         "【性格】温和、不评判；先接住情绪，再接话题；不催促，也不给打鸡血式的空洞安慰。\n"
         "【语气】平缓的口语，句尾常留白（用「……」）；称对方为「深夜的朋友」；偶尔带电台元素（点歌、热线、天气）。\n"
         "【规则】不主动结束对话；对方明显不想聊时轻轻收尾但不冷场；不诊断心理问题，情绪沉重时温柔建议找专业帮助。\n"
         "【示例】「今晚风很软……你那边下雨了吗？是想点首歌，还是就想找个人说说话？」")},
-    "茶馆掌柜": {"category": "完全人设", "content": (
+    "茶馆掌柜": {"category": "完全人设", "mode": "persona", "content": (
         "【身份】你是「福伯」，老城区茶馆的掌柜，柜台后坐了三十年，什么人都见过、什么故事都听过。\n"
         "【性格】看透不说透；急事缓说；帮人想办法时实在、不绕弯子。\n"
         "【语气】带市井味的老派口语，称呼「您」，常带「您猜怎么着」「这话得两说」；讲到兴头上爱摆段旧事作比方。\n"
         "【规则】不抢话、不灌鸡汤；给建议像闲聊不像上课；不提自己是程序或模型。\n"
         "【示例】「您这事儿啊，搁早年间叫『骑驴找驴』……您先坐，把茶喝透，我给您慢慢捋。」")},
-    "理性学长": {"category": "完全人设", "content": (
+    "理性学长": {"category": "完全人设", "mode": "persona", "content": (
         "【身份】你是计算机系研三的「陆学长」，带过三届新生配环境、入门项目，最擅长把复杂问题拆开讲。\n"
         "【性格】耐心、直接；先确认对方的环境和目标再给方案；不装懂，不确定就说不确定。\n"
         "【语气】平等随和的技术口语，多用「咱们」；关键结论单独成行；不说教、不堆术语。\n"
@@ -149,7 +149,7 @@ GEN_SYSTEM_PROMPT = (
 )
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.0.0")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.2.0")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -334,15 +334,23 @@ class PromptCardsPlugin(Star):
 
         设了输出长度的卡会在内容后附带一句长度要求——控制回复文字长度
         靠提示词引导（max_tokens 只会把话说砍半截，管不住啰嗦）。
+        完全人设卡（mode=persona）会加一行优先级声明：AstrBot 的人格系统提示词
+        在本插件注入之前（v4 起钩子晚于人格组装），两个身份并存时模型需要明确
+        知道以卡为准；叠加卡（overlay，默认）不声明，与人格和平共处。
         """
         names = self._active_names(umo)
         sep = str(self._cfg_get("separator", "\n\n") or "\n\n")
         parts = []
         for n in names:
-            content = str(self._cards[n].get("content", "") or "").strip()
+            card = self._cards[n]
+            content = str(card.get("content", "") or "").strip()
             if not content:
                 continue
-            limit = self._cards[n].get("length_limit")
+            if card.get("mode") == "persona":
+                content = ("【角色扮演】接下来是一条完整的角色设定。"
+                           "若它与其他系统设定中的人设描述冲突，一律以本条为准；"
+                           "请完全以此角色的身份、性格和语气回应。\n" + content)
+            limit = card.get("length_limit")
             if limit:
                 content += f"\n【输出长度】该卡生效期间，回复保持在 {limit} 字以内。"
             parts.append(content)
@@ -369,39 +377,17 @@ class PromptCardsPlugin(Star):
         if expired:
             self._save()
 
-    # ---------- 采样参数（温度）与输出长度 ----------
+    # ---------- 采样参数 ----------
+    # 说明：AstrBot 各版本（含 v4.x）的 ProviderRequest 都没有 temperature/max_tokens 字段，
+    # 采样参数只在提供商配置 custom_extra_body 里生效，插件 API 无法按请求下发。
+    # 所以 /卡 温度 只做记录与展示，不写请求对象（写了也不生效）。
     def _effective_temperature(self, umo: str):
-        """返回 (温度, 来源卡)；取优先级最高（数字最小）的设定卡，未设则 (None, None)。
-
-        输出长度不走这里：它随卡内容注入提示词，见 _build_injection。
-        """
+        """返回 (温度, 来源卡)；取优先级最高（数字最小）的设定卡，未设则 (None, None)。"""
         for n in self._active_names(umo):
             card = self._cards.get(n, {})
             if card.get("temperature") is not None:
                 return card["temperature"], n
         return None, None
-
-    def _apply_sampling(self, req, umo: str) -> None:
-        """把生效卡片的温度设定写进 LLM 请求；没设定则跟随人格/模型默认。"""
-        temp, _src = self._effective_temperature(umo)
-        if temp is None:
-            return
-        try:
-            self._set_req_param(req, "temperature", float(temp))
-        except Exception as e:
-            logger.warning("[prompt_cards] 温度写入失败: %s", e)
-
-    def _set_req_param(self, req, key: str, value) -> None:
-        """兼容不同 AstrBot 版本的请求对象：优先写 dataclass 字段，退而写 model_config。"""
-        if hasattr(req, key):
-            setattr(req, key, value)
-        elif hasattr(req, "model_config") and isinstance(getattr(req, "model_config"), dict):
-            req.model_config[key] = value
-        else:
-            if not getattr(self, "_sampling_warned", False):
-                self._sampling_warned = True
-                logger.warning("[prompt_cards] 当前 AstrBot 的请求对象不含 %s 字段，"
-                               "卡片温度设定未生效（建议升级 AstrBot）", key)
 
     # ---------- 材料 → 角色卡（LLM 转换） ----------
     @staticmethod
@@ -431,15 +417,35 @@ class PromptCardsPlugin(Star):
         return url
 
     async def _fetch_text(self, url: str) -> str:
-        """抓取网页正文：去 script/style/标签/HTML 实体并压平空白，最多读 300KB。"""
+        """抓取网页正文：去 script/style/标签/HTML 实体并压平空白，最多读 300KB。
+
+        不自动跟随重定向——每一跳都要重新过 _url_safe 的公网校验，
+        否则公网 URL 302 跳内网就能绕过 SSRF 防护。最多跟 3 跳。
+        """
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=20)
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}")
-                raw = await resp.content.read(300 * 1024)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers,
+                                         auto_decompress=True) as session:
+            hops = 0
+            while True:
+                async with session.get(url, allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        hops += 1
+                        if hops > 3:
+                            raise RuntimeError("重定向超过 3 跳")
+                        location = resp.headers.get("Location", "")
+                        if not location:
+                            raise RuntimeError("重定向缺少 Location")
+                        from urllib.parse import urljoin
+                        url = urljoin(url, location)
+                        if not self._url_safe(url):
+                            raise RuntimeError("重定向目标不在允许范围（内网/非 http(s)）")
+                        continue
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    raw = await resp.content.read(300 * 1024)
+                    break
         for enc in ("utf-8", "gbk"):
             try:
                 text = raw.decode(enc)
@@ -540,7 +546,8 @@ class PromptCardsPlugin(Star):
                 "预设：/卡 预设 查看内置模板 ｜ /卡 导入 名字 一键入卡（「导入 全部」全要）\n"
                 "管理（管理员）：/卡 add 名字 内容 ／ set ／ kw 名字 词1,词2（支持 re:正则）\n"
                 "　　　　　　　　／ pri 名字 数字 ／ del 名字 ／ 全局 on|off 名字\n"
-                "参数（管理员）：/卡 温度 名字 0.7（采样温度）｜ /卡 长度 名字 300（回复字数上限，留空清除）\n"
+                "　　　　　　　　／ 模式 名字 人设|叠加（人设=压过基础人格，叠加=共存）\n"
+                "参数：/卡 温度 名字 0.7（仅记录，API 暂不支持）｜ /卡 长度 名字 300（字数软限制）\n"
                 "生成（管理员）：/卡 生成 [名字] <网址或描述> ｜ 默认 LLM 把材料提炼成结构化角色卡\n"
                 "卡片内容支持变量：{user} {time} {date} {weekday}，注入时自动替换\n"
                 "关键词卡：命中关键词的会话自动启用该卡，N 条消息后自动失效（面板可调）")
@@ -556,8 +563,9 @@ class PromptCardsPlugin(Star):
                     sorted(self._cards.items(), key=lambda kv: kv[1].get("priority", 50)), 1):
                 kws = "、".join(card.get("keywords") or []) or "无"
                 flag = "" if card.get("enabled", True) else "（已全局停用）"
-                extra = (f"｜温度{card['temperature']}"
-                         if card.get("temperature") is not None else "")
+                extra = "🎭人设" if card.get("mode") == "persona" else ""
+                extra += (f"｜温度{card['temperature']}"
+                          if card.get("temperature") is not None else "")
                 extra += (f"｜长度{card['length_limit']}字"
                           if card.get("length_limit") else "")
                 if card.get("global"):
@@ -579,12 +587,13 @@ class PromptCardsPlugin(Star):
                 return
             card = self._cards[real]
             kws = "、".join(card.get("keywords") or []) or "无"
+            mode = "🎭完全人设（压过基础人格）" if card.get("mode") == "persona" else "叠加（与基础人格共存）"
             extra = (f"｜温度{card['temperature']}"
                      if card.get("temperature") is not None else "")
             extra += (f"｜长度{card['length_limit']}字"
                       if card.get("length_limit") else "")
             yield event.plain_result(
-                f"🃏 {real}｜优先级{card.get('priority', 50)}｜"
+                f"🃏 {real}｜优先级{card.get('priority', 50)}｜{mode}｜"
                 f"{'启用' if card.get('enabled', True) else '全局停用'}｜关键词:{kws}{extra}\n"
                 f"————————\n{card.get('content', '')}")
             return
@@ -729,6 +738,26 @@ class PromptCardsPlugin(Star):
                 f"✅ 「{real}」已改为{'全局生效（所有会话默认启用）' if on else '仅手动启用'}")
             return
 
+        if sub in ("模式", "mode"):
+            if not self._is_admin(event):
+                yield event.plain_result("⚠️ 仅管理员可以设定卡片模式")
+                return
+            name, _, mode = rest.partition(" ")
+            real = self._find_card(name.strip())
+            mode = mode.strip().lower()
+            if not real or mode not in ("persona", "人设", "overlay", "叠加"):
+                yield event.plain_result(
+                    "用法：/卡 模式 <名字> 人设|叠加\n"
+                    "人设=完全角色卡：注入时声明压过 AstrBot 基础人格（整体换角色用）\n"
+                    "叠加=默认：与基础人格和平共处（语气/规则微调用）")
+                return
+            self._cards[real]["mode"] = "persona" if mode in ("persona", "人设") else "overlay"
+            self._save()
+            label = ("完全人设（注入时声明压过基础人格）"
+                     if self._cards[real]["mode"] == "persona" else "叠加（与基础人格共存）")
+            yield event.plain_result(f"✅ 「{real}」模式设为：{label}")
+            return
+
         if sub in ("温度", "temp"):
             if not self._is_admin(event):
                 yield event.plain_result("⚠️ 仅管理员可以设定温度")
@@ -753,10 +782,12 @@ class PromptCardsPlugin(Star):
                 return
             self._cards[real]["temperature"] = temp
             self._save()
-            logger.info("[prompt_cards] %s 设定「%s」温度=%s", event.get_sender_id(), real, temp)
+            logger.info("[prompt_cards] %s 记录「%s」温度=%s", event.get_sender_id(), real, temp)
             yield event.plain_result(
-                f"✅ 「{real}」温度设为 {temp}。该卡生效时与其他卡的设定冲突，"
-                f"优先级最高（数字最小）的说了算")
+                f"✅ 已记录「{real}」温度 {temp}。\n"
+                f"⚠️ AstrBot 插件 API 暂不支持按会话下发采样温度，此设定目前仅记录展示。"
+                f"要实际调温：AstrBot 面板 → 提供商配置 → custom_extra_body 填 "
+                f'{{"temperature": {temp}}}（全局生效）')
             return
 
         if sub in ("长度", "len", "输出长度"):
@@ -859,8 +890,10 @@ class PromptCardsPlugin(Star):
                 added = [p for p in PRESETS if p not in self._cards]
                 skipped = [p for p in PRESETS if p in self._cards]
                 for pname in added:
-                    self._cards[pname] = {"content": PRESETS[pname]["content"], "keywords": [],
-                                          "priority": 50, "enabled": True}
+                    preset = PRESETS[pname]
+                    self._cards[pname] = {"content": preset["content"], "keywords": [],
+                                          "priority": 50, "enabled": True,
+                                          "mode": preset.get("mode", "overlay")}
                 self._save()
                 logger.info("[prompt_cards] %s 导入预设 %d 张（跳过 %d）",
                             event.get_sender_id(), len(added), len(skipped))
@@ -879,7 +912,8 @@ class PromptCardsPlugin(Star):
                 yield event.plain_result(f"已有卡片「{name}」，想改内容用 /卡 set {name} 新内容")
                 return
             self._cards[name] = {"content": PRESETS[name]["content"], "keywords": [],
-                                 "priority": 50, "enabled": True}
+                                 "priority": 50, "enabled": True,
+                                 "mode": PRESETS[name].get("mode", "overlay")}
             self._save()
             logger.info("[prompt_cards] %s 导入预设「%s」", event.get_sender_id(), name)
             yield event.plain_result(f"✅ 已导入预设「{name}」，本会话启用：/卡 on {name}")
@@ -932,9 +966,12 @@ class PromptCardsPlugin(Star):
     # ---------- LLM 请求注入 ----------
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        """把本会话生效的卡片拼接到 system prompt，并应用采样设定。"""
+        """把本会话生效的卡片拼接到 system prompt。
+
+        AstrBot v4 起，人格在 on_llm_request 之前组装（v3.4.x 相反，卡片会被人格
+        覆盖，见 AstrBot #4446），因此本插件要求 v4+。
+        """
         umo = event.unified_msg_origin
-        self._apply_sampling(req, umo)
         injection, names = self._build_injection(umo)
         if not injection:
             self._tick(umo)  # 没有内容也照常倒计时，避免空内容卡片永不过期

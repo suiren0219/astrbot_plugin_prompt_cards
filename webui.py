@@ -107,6 +107,8 @@ class CardWebUI:
             return web.json_response({"error": "名字不能为空、不含空格、不超过 32 字"}, status=400)
         if not content:
             return web.json_response({"error": "内容不能为空"}, status=400)
+        if len(content) > 20000:
+            return web.json_response({"error": "内容过长（上限 2 万字）"}, status=400)
         p = self.plugin
         card = dict(p._cards.get(name) or {"keywords": [], "priority": 50, "enabled": True})
         card["content"] = content
@@ -141,6 +143,9 @@ class CardWebUI:
                 return web.json_response({"error": "输出长度需为不小于 20 的整数"}, status=400)
         card["enabled"] = bool(data.get("enabled", card.get("enabled", True)))
         card["global"] = bool(data.get("global", card.get("global", False)))
+        mode = data.get("mode")
+        if mode in ("persona", "overlay"):
+            card["mode"] = mode
         p._cards[name] = card
         p._save()
         self.logger.info("[prompt_cards] WebUI 保存卡片「%s」（%d 字）", name, len(content))
@@ -211,6 +216,8 @@ class CardWebUI:
         name = str(data.get("name") or "").strip() or None
         if not source:
             return web.json_response({"error": "材料不能为空"}, status=400)
+        if len(source) > 20000:
+            return web.json_response({"error": "材料过长（上限 2 万字）"}, status=400)
         card_name, content, err = await self.plugin._llm_distill(source, name)
         if err:
             return web.json_response({"error": err}, status=400)

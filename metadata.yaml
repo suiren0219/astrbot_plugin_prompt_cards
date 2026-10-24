@@ -1,8 +1,8 @@
 name: astrbot_plugin_prompt_cards
 display_name: 提示词卡
 short_desc: 人格/风格提示词卡片化：按会话开关、关键词触发，自动注入 system prompt
-desc: 把多套提示词存成「卡片」，在 LLM 请求前拼接到 system prompt。支持按会话启用/停用（不同群不同人格）、关键词自动激活（世界书式条件注入，N 条消息后自动失效）、优先级排序、注入位置与分隔符可调；/卡 peek 可预览实际注入内容方便调试。只做提示词管理与注入机制，卡内容由使用者自行维护。
-version: v1.0.0
+desc: 把多套提示词存成「卡片」，在 LLM 请求前拼接到 system prompt。卡片分「完全人设/叠加」两种人格适配模式（人设卡声明压过基础人格，叠加卡与基础人格共存）；支持按会话启用/停用、关键词自动激活（世界书式条件注入，N 条消息后自动失效）、全局卡、输出长度引导、内置 20 张预设、AI 从网页/文字提炼角色卡、Endfield 风格 WebUI 控制台。需要 AstrBot v4+。
+version: v1.2.0
 author: suiren0219
 repo: https://github.com/suiren0219/astrbot_plugin_prompt_cards
 category: 人格/提示词
