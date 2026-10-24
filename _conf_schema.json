@@ -1,0 +1,71 @@
+{
+  "separator": {
+    "description": "🔗 卡片之间的拼接分隔符",
+    "type": "string",
+    "default": "\n\n"
+  },
+  "inject_position": {
+    "description": "📍 注入位置",
+    "type": "string",
+    "options": ["append", "prepend"],
+    "default": "append",
+    "hint": "append=追加在现有人格提示词之后（人格优先级更高）；prepend=插在人格提示词之前"
+  },
+  "keyword_trigger": {
+    "description": "🔑 关键词自动激活",
+    "type": "bool",
+    "default": true,
+    "hint": "消息命中卡片关键词时，在当前会话自动启用该卡"
+  },
+  "keyword_expire_messages": {
+    "description": "⏳ 关键词卡自动失效条数",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "关键词激活的卡片在 N 条对话消息后自动停用，0=永不失效（手动 /卡 on 的不受影响）"
+  },
+  "keyword_notify": {
+    "description": "🔔 关键词命中提示",
+    "type": "bool",
+    "default": false,
+    "hint": "命中时在会话里发一条提示，调试触发规则时打开，平时建议关"
+  },
+  "context_anchor": {
+    "description": "⚓ 长对话锚点",
+    "type": "bool",
+    "default": false,
+    "hint": "对话很长时人格容易漂移；开启后每次请求在最后一条用户消息前插入一句提醒"
+  },
+  "context_anchor_text": {
+    "description": "⚓ 锚点文本",
+    "type": "string",
+    "default": "（系统提醒：请持续保持系统提示词中设定的人设与语气。）",
+    "condition": "context_anchor"
+  },
+  "max_inject_chars": {
+    "description": "📏 注入字数上限告警",
+    "type": "int",
+    "default": 0,
+    "slider": {
+      "min": 0,
+      "max": 20000,
+      "step": 500
+    },
+    "hint": "生效卡片总字数超过该值时 /卡 peek 会给出警告（0=不检查）；只告警不截断"
+  },
+  "admin_only_mutate": {
+    "description": "🛡 仅管理员可增删改卡片",
+    "type": "bool",
+    "default": true
+  },
+  "admin_ids": {
+    "description": "🪪 管理员 ID 备用名单",
+    "type": "string",
+    "default": "",
+    "hint": "逗号分隔。is_admin 判定不可用时的兜底"
+  }
+}
