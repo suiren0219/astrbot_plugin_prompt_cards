@@ -170,6 +170,10 @@ AstrBot 各版本（含 v4）的插件 API 都**不支持**按请求下发采样
 卡片与会话启用状态保存在 `data/config/astrbot_plugin_prompt_cards.json`，
 可直接编辑（注意 JSON 格式），删除后重启会重新生成两张示例卡。
 
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)；GitHub Releases 同步发布。
+
 ## 预设写法参考
 
 - [galgame-astrbot-personas](https://github.com/LanternFlower/galgame-astrbot-personas)：
