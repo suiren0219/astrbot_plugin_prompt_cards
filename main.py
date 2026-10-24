@@ -25,10 +25,13 @@
 N 条消息后自动失效（可配置），类似「世界书」的条件注入。
 """
 import html as _html
+import importlib.util
 import json
 import os
 import re
+import secrets
 import socket
+import sys
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -43,6 +46,23 @@ except ImportError:  # 旧版本兼容
 
 PLUGIN_NAME = "astrbot_plugin_prompt_cards"
 DATA_PATH = os.path.join("data", "config", f"{PLUGIN_NAME}.json")
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_side_module(mod_name: str, filename: str):
+    """按文件路径加载同目录模块（插件可能被当作单文件加载，相对导入不可用）。"""
+    for base in (PLUGIN_DIR, os.path.dirname(PLUGIN_DIR)):
+        path = os.path.join(base, filename)
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location(mod_name, path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            spec.loader.exec_module(mod)
+            return mod
+    return None
+
+
+webui_mod = _load_side_module("_prompt_cards_webui", "webui.py")
 
 CARD_NAME_MAX = 32  # 卡片名字长度上限（不含内容），防止一整段话被当成名字
 
@@ -134,16 +154,20 @@ class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config
-        self._cards: dict[str, dict] = {}    # 名字 -> {content, keywords, priority, enabled}
+        self.webui = None
+        self._cards: dict[str, dict] = {}    # 名字 -> {content, keywords, priority, enabled, ...}
         self._sessions: dict[str, dict] = {} # 会话origin -> {卡片名: {remaining, source}}
         self._load()
 
     # ---------- 配置 ----------
     def _cfg_get(self, key: str, default=None):
-        """安全取配置项；config 为 None（旧版本不注入配置）时用默认值。"""
+        """安全取配置项；object 分组式 schema（object + items）里的键也能取到，优先取分组值。"""
         if self.config is None:
             return default
         try:
+            for group in self.config.values():
+                if isinstance(group, dict) and key in group:
+                    return group[key]
             return self.config.get(key, default)
         except Exception:
             return default
@@ -191,8 +215,42 @@ class PromptCardsPlugin(Star):
     async def initialize(self):
         logger.info("[prompt_cards] 插件已加载，卡片 %d 张，有启用状态的会话 %d 个",
                     len(self._cards), len(self._sessions))
+        await self._start_webui()
+
+    async def _start_webui(self):
+        """启动 Endfield 风格 WebUI 控制台（面板可关）。令牌留空则自动生成并写回配置。"""
+        if not webui_mod:
+            logger.warning("[prompt_cards] webui.py 加载失败，WebUI 不可用")
+            return
+        if not self._cfg_get("webui_enable", True):
+            logger.info("[prompt_cards] WebUI 已在面板中关闭")
+            return
+        token = str(self._cfg_get("webui_token", "") or "")
+        if not token:
+            token = secrets.token_hex(8)
+            try:
+                if self.config is not None:
+                    if isinstance(self.config.get("webui"), dict):
+                        self.config["webui"]["webui_token"] = token
+                    else:
+                        self.config["webui_token"] = token
+                    self.config.save_config()
+            except Exception as e:
+                logger.warning(f"[prompt_cards] webui_token 写回配置失败: {e}")
+        host = str(self._cfg_get("webui_host", "127.0.0.1") or "127.0.0.1")
+        port = int(self._cfg_get("webui_port", 6199) or 6199)
+        self.webui = webui_mod.CardWebUI(self, host, port, token, logger)
+        try:
+            await self.webui.start()
+        except Exception as e:
+            self.webui = None
+            logger.warning(f"[prompt_cards] WebUI 启动失败（端口被占用？）: {e}")
+            return
+        logger.info("[prompt_cards] WebUI 已启动: http://%s:%d/  接入令牌: %s", host, port, token)
 
     async def terminate(self):
+        if self.webui:
+            await self.webui.stop()
         self._save()
 
     # ---------- 指令解析 ----------
@@ -404,56 +462,60 @@ class PromptCardsPlugin(Star):
             return m.group(1).strip(), text[m.end():].strip()
         return None, text
 
-    async def _gen_card(self, event: AstrMessageEvent, payload: str):
-        """生成角色卡：payload 可以是网址（先抓正文）或一段描述文字，交给默认 LLM 提炼。"""
+    async def _llm_distill(self, payload: str, name: str | None = None):
+        """材料 → (卡片名, 卡内容, 错误信息)。
+
+        payload 是网址时先抓正文；交给当前默认 LLM 按结构提炼。
+        命令流和 WebUI 共用；出错时不抛异常，把人话原因放在返回值里。
+        """
         get_provider = getattr(self.context, "get_using_provider", None) if self.context else None
         provider = get_provider() if callable(get_provider) else None
         if provider is None:
-            yield event.plain_result("❌ 没有可用的默认 LLM 提供商，请先在 AstrBot 面板配置并启用一个提供商")
-            return
-        name = None
-        first, _, remainder = payload.partition(" ")
-        if remainder.strip() and not first.startswith(("http://", "https://")) and len(first) <= 16:
-            name, payload = first.strip(), remainder.strip()
+            return None, "", "没有可用的默认 LLM 提供商，请先在 AstrBot 面板配置并启用一个提供商"
         if payload.startswith(("http://", "https://")):
             safe = self._url_safe(payload)
             if not safe:
-                yield event.plain_result("❌ 这个网址不可用（仅支持 http/https 公网地址）")
-                return
-            yield event.plain_result("⏳ 正在抓取网页并提炼，请稍等……")
+                return None, "", "这个网址不可用（仅支持 http/https 公网地址）"
             try:
                 source = await self._fetch_text(safe)
             except Exception as e:
-                yield event.plain_result(f"❌ 抓取失败：{e}\n有些站点反爬严格，可以复制正文直接发给本指令")
-                return
+                return None, "", f"抓取失败：{e}（有些站点反爬严格，可以复制正文直接发）"
             if len(source) < 50:
-                yield event.plain_result("❌ 页面抓到的正文太少（可能是动态渲染页），建议复制正文直接发")
-                return
+                return None, "", "页面抓到的正文太少（可能是动态渲染页），建议复制正文直接发"
             source = source[:6000]
         else:
-            yield event.plain_result("⏳ 正在提炼，请稍等……")
             source = payload[:4000]
         try:
             resp = await provider.text_chat(prompt=source, session_id=None,
                                             system_prompt=GEN_SYSTEM_PROMPT)
         except Exception as e:
-            yield event.plain_result(f"❌ LLM 调用失败：{e}")
-            return
+            return None, "", f"LLM 调用失败：{e}"
         llm_name, content = self._parse_llm_card(getattr(resp, "completion_text", "") or "")
         if len(content) < 30:
-            yield event.plain_result("❌ LLM 返回的内容太短，换段材料或换个提供商再试")
-            return
+            return None, "", "LLM 返回的内容太短，换段材料或换个提供商再试"
         card_name = re.sub(r"[\s「」\"']", "", name or llm_name or "生成卡")[:16] or "生成卡"
         base, i = card_name, 2
         while card_name in self._cards:
             card_name = f"{base}{i}"
             i += 1
+        return card_name, content, None
+
+    async def _gen_card(self, event: AstrMessageEvent, payload: str):
+        """生成角色卡的命令流：拆出可选名字，交给 _llm_distill，落盘并回执。"""
+        name = None
+        first, _, remainder = payload.partition(" ")
+        if remainder.strip() and not first.startswith(("http://", "https://")) and len(first) <= 16:
+            name, payload = first.strip(), remainder.strip()
+        yield event.plain_result("⏳ 正在获取材料并提炼，请稍等……")
+        card_name, content, err = await self._llm_distill(payload, name)
+        if err:
+            yield event.plain_result(f"❌ {err}")
+            return
         self._cards[card_name] = {"content": content, "keywords": [],
                                   "priority": 50, "enabled": True}
         self._save()
-        logger.info("[prompt_cards] %s 生成角色卡「%s」（%d 字，来源=%s）",
-                    event.get_sender_id(), card_name, len(content),
-                    "网页" if payload.startswith("http") else "文字")
+        logger.info("[prompt_cards] %s 生成角色卡「%s」（%d 字）",
+                    event.get_sender_id(), card_name, len(content))
         yield event.plain_result(
             f"✅ 已生成角色卡「{card_name}」（{len(content)} 字）\n"
             f"查看：/卡 show {card_name} ｜ 启用：/卡 on {card_name}\n"

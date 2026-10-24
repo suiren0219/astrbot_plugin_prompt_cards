@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ef-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>提示词卡 / PROMPT CARDS</title>
+<style>
+/* ===== Endfield UI tokens（skill 规范：纸/墨/唯一强调黄/切角/细线/无圆角无投影） ===== */
+:root{
+  --tri-1:#FF00E0; --tri-2:#FFFA00; --tri-3:#3DFFB8;
+  --signal:#FFFA00; --on-signal:#161616;
+  --danger:#FF8A7A; --cmd:#141414;
+  --snap:cubic-bezier(.16,1,.3,1); --mech:cubic-bezier(.7,0,.2,1);
+  --cut:26px;
+}
+html[data-ef-theme="dark"]{
+  --paper:#191919; --panel:#222222; --ink:#EDEDED; --ink2:#9E9E9E;
+  --rule:#353535; --chip:#2C2C2C; --hatch:rgba(237,237,237,.20);
+  --grid:rgba(237,237,237,.045); --scrim:rgba(0,0,0,.78);
+}
+html[data-ef-theme="light"]{
+  --paper:#F4F4F2; --panel:#FFFFFF; --ink:#161616; --ink2:#5C5C5C;
+  --rule:#D9D9D6; --chip:#E6E6E2; --hatch:rgba(22,22,22,.20);
+  --grid:rgba(22,22,22,.05); --scrim:rgba(22,22,22,.55);
+}
+*{box-sizing:border-box;border-radius:0 !important;margin:0}
+html,body{height:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Saira","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+body::before{ /* 地面：细网格 */
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:linear-gradient(var(--grid) 1px,transparent 1px),
+             linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:56px 56px;
+}
+::selection{background:var(--signal);color:var(--on-signal)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,textarea{font:inherit;color:var(--ink);background:var(--paper);
+  border:1px solid var(--rule);padding:8px 10px;width:100%;outline:none}
+input:focus,textarea:focus{border-color:var(--ink)}
+textarea{resize:vertical;min-height:150px;line-height:1.55}
+/* 三色条：只在页面出现一次 */
+.tri{display:flex;height:3px;position:relative;z-index:3}
+.tri i{flex:1}
+.tri i:nth-child(1){background:var(--tri-1)}
+.tri i:nth-child(2){background:var(--tri-2)}
+.tri i:nth-child(3){background:var(--tri-3)}
+/* ===== 深色命令栏（两种主题下都是深色） ===== */
+.cmd{position:sticky;top:0;z-index:5;background:var(--cmd);color:#EDEDED;
+  display:flex;align-items:stretch;gap:0;border-bottom:1px solid #000}
+.cmd>div,.cmd>nav,.cmd>button{padding:10px 18px}
+.brand{border-right:1px solid #2A2A2A;min-width:210px}
+.brand .eb{font-size:11px}
+.brand b{display:block;font-size:19px;font-weight:900;letter-spacing:.12em;line-height:1.1}
+.eyebrow,.eb{font-weight:600;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#8B8B8B}
+.cmd nav{display:flex;align-items:stretch;gap:2px;flex:1;overflow-x:auto}
+.cmd nav button{position:relative;white-space:nowrap;font-size:12px;letter-spacing:.14em;
+  text-transform:uppercase;color:#B9B9B9;padding:0 16px;font-weight:600}
+.cmd nav button i{display:inline-block;font-style:normal;margin-left:6px;font-size:13px;letter-spacing:.06em}
+.cmd nav button.on{color:#161616;background:var(--signal);font-weight:800}
+.cmd nav button:not(.on):hover{color:#fff}
+.cmd nav button:not(.on):hover::after{content:"";position:absolute;left:16px;right:16px;bottom:6px;height:2px;background:var(--signal)}
+.cmd-right{margin-left:auto;display:flex;align-items:center;border-left:1px solid #2A2A2A}
+.cmd-right .stat{font-size:12px;color:#B9B9B9;letter-spacing:.08em;white-space:nowrap}
+.cmd-right .stat b{color:#fff}
+#themeBtn{font-size:11px;letter-spacing:.16em;color:#B9B9B9;border-left:1px solid #2A2A2A;min-width:86px;text-align:center}
+#themeBtn:hover{color:#fff}
+/* ===== 布局 ===== */
+main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22px 90px}
+.view{display:none}
+.view.on{display:block;animation:vin .24s var(--snap)}
+@keyframes vin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.sec{margin-top:34px}
+.sec-h{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--rule);padding-bottom:8px;margin-bottom:16px}
+.sec-h .eb{color:var(--ink2)}
+.sec-h b{font-size:20px;font-weight:900;letter-spacing:.06em}
+.sec-h .spacer{flex:1}
+/* ===== 看板（大数字） ===== */
+.boards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.board{position:relative;background:var(--panel);border:1px solid var(--rule);padding:16px 18px 14px;
+  clip-path:polygon(0 0,100% 0,100% calc(100% - var(--cut)),calc(100% - var(--cut)) 100%,0 100%)}
+.board::before{content:"";position:absolute;top:0;left:0;width:44px;height:5px;background:var(--ink)}
+.board .num{font-size:42px;font-weight:800;font-stretch:125%;line-height:1;letter-spacing:.01em}
+.board .lab{margin-top:6px;font-size:11px;letter-spacing:.16em;color:var(--ink2);text-transform:uppercase;font-weight:600}
+.board .lab i{font-style:normal;margin-left:8px;letter-spacing:.05em}
+/* ===== 按钮：切角=可点击，hover 黄从左擦入 ===== */
+.btn{position:relative;display:inline-flex;align-items:center;gap:8px;padding:9px 18px;
+  background:var(--ink);color:var(--paper);font-weight:700;font-size:13px;letter-spacing:.08em;
+  clip-path:polygon(0 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%);
+  transition:transform .1s var(--snap);overflow:hidden}
+.btn>*{position:relative;z-index:1}
+.btn::before{content:"";position:absolute;inset:0;background:var(--signal);
+  transform:scaleX(0);transform-origin:left;transition:transform .28s var(--mech)}
+.btn:hover::before{transform:scaleX(1)}
+.btn:hover{color:var(--on-signal)}
+.btn:active{transform:translateY(1px)}
+.btn.ghost{background:transparent;color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.btn.ghost:hover{color:var(--on-signal)}
+.btn.ghost::before{transform:scaleX(0)}
+.btn.danger{background:var(--danger);color:#161616}
+.btn.danger::before{background:#161616}
+.btn.danger:hover{color:var(--danger)}
+.btn[disabled]{background:var(--chip);color:var(--ink2);cursor:not-allowed;pointer-events:none}
+/* 状态章：实线=生效 虚线=后台 黄块=全局 */
+.tag{display:inline-block;padding:2px 9px;font-size:11px;font-weight:700;letter-spacing:.08em;
+  border:1px solid var(--ink)}
+.tag.dash{border-style:dashed;color:var(--ink2);border-color:var(--ink2)}
+.tag.solid-y{background:var(--signal);color:var(--on-signal);border-color:var(--signal)}
+/* ===== 记录行 ===== */
+.rows{border-top:1px solid var(--rule)}
+.row{display:flex;align-items:center;gap:16px;padding:13px 10px 13px 16px;
+  border-bottom:1px solid var(--rule);cursor:pointer;position:relative;
+  transition:transform .16s var(--snap),padding .16s var(--snap)}
+.row:hover{background:var(--panel)}
+.row.on{background:var(--panel);transform:translateX(6px)}
+.row.on::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--trace,var(--ink))}
+.row .no{font-weight:800;font-stretch:115%;font-size:14px;color:var(--ink2);min-width:64px}
+.row .name{font-weight:800;font-size:16px;letter-spacing:.04em}
+.row .meta{margin-left:auto;display:flex;gap:14px;align-items:center;color:var(--ink2);font-size:12.5px;white-space:nowrap}
+.row .meta .sep{color:var(--rule)}
+.rows.empty{border:0}
+.empty{padding:42px 20px;text-align:center;color:var(--ink2);font-size:13.5px;
+  background:repeating-linear-gradient(45deg,var(--hatch) 0 1px,transparent 1px 9px);
+  border:1px solid var(--rule);letter-spacing:.06em}
+.empty b{display:block;color:var(--ink);font-size:15px;margin-bottom:6px;letter-spacing:.1em}
+@keyframes rowin{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+.row{animation:rowin .3s var(--snap) both}
+/* ===== 会话行 ===== */
+.sess .umo{font-weight:700;font-size:13.5px;letter-spacing:.02em;word-break:break-all}
+.sess .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.sess .chips .c{display:inline-flex;align-items:center;gap:8px;background:var(--chip);
+  border:1px solid var(--rule);padding:4px 10px;font-size:12.5px;font-weight:600}
+.sess .chips .c button{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--ink2);padding:0 2px}
+.sess .chips .c button:hover{color:var(--on-signal);background:var(--signal)}
+/* ===== 抽屉编辑器 ===== */
+.scrim{position:fixed;inset:0;background:var(--scrim);z-index:8;opacity:0;pointer-events:none;transition:opacity .22s var(--mech)}
+.scrim.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:94vw;z-index:9;
+  background:var(--panel);border-left:1px solid var(--rule);
+  transform:translateX(102%);transition:transform .32s var(--mech);
+  display:flex;flex-direction:column}
+.drawer.on{transform:none}
+.drawer-h{padding:16px 20px 12px;border-bottom:1px solid var(--rule)}
+.drawer-h .eb{color:var(--ink2)}
+.drawer-h b{font-size:19px;font-weight:900;letter-spacing:.08em}
+.drawer-b{flex:1;overflow:auto;padding:18px 20px 26px}
+.f{margin-bottom:16px}
+.f label{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--ink2);margin-bottom:6px}
+.f label i{font-style:normal;letter-spacing:.05em;text-transform:none;color:var(--ink2);font-weight:400}
+.f .pair{display:flex;gap:10px}
+.f .pair>div{flex:1}
+.drawer-f{padding:14px 20px;border-top:1px solid var(--rule);display:flex;gap:10px}
+.drawer-f .btn{flex:1;justify-content:center}
+.tog{display:inline-flex;border:1px solid var(--ink)}
+.tog button{flex:1;padding:7px 14px;font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--ink2)}
+.tog button.on{background:var(--signal);color:var(--on-signal)}
+/* ===== 令牌门 ===== */
+.gate{position:fixed;inset:0;z-index:20;background:var(--paper);display:none;
+  align-items:center;justify-content:center}
+.gate.on{display:flex}
+.gate::before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(45deg,var(--hatch) 0 1px,transparent 1px 11px);opacity:.5}
+.gate-box{position:relative;background:var(--panel);border:1px solid var(--rule);width:400px;max-width:92vw;
+  padding:30px 30px 26px;clip-path:polygon(0 0,100% 0,100% calc(100% - 30px),calc(100% - 30px) 100%,0 100%)}
+.gate-box .tri2{display:flex;height:3px;margin:-8px -8px 22px}
+.gate-box .tri2 i{flex:1}
+.gate-box h1{font-size:24px;font-weight:900;letter-spacing:.1em;margin:4px 0 6px}
+.gate-box p{font-size:12.5px;color:var(--ink2);line-height:1.7;margin-bottom:18px}
+/* ===== 通知（黄旗） ===== */
+.toast{position:fixed;left:18px;bottom:18px;z-index:30;display:flex;flex-direction:column;gap:8px}
+.toast .t{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--rule);
+  padding:10px 16px;font-size:13px;font-weight:600;max-width:70vw;
+  animation:tin .22s var(--snap)}
+.toast .t::before{content:"";width:10px;height:10px;background:var(--signal);flex:none}
+@keyframes tin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.hatchbar{height:14px;background:repeating-linear-gradient(45deg,var(--hatch) 0 1px,transparent 1px 9px);margin:2px 0 18px}
+.hint{font-size:12px;color:var(--ink2);letter-spacing:.04em;line-height:1.7}
+.mono{font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+@media (max-width:760px){
+  .boards{grid-template-columns:repeat(2,1fr)}
+  .brand{min-width:0}
+  .cmd{flex-wrap:wrap}
+  .cmd-right .stat{display:none}
+  .drawer{width:100vw;max-width:100vw;top:auto;height:88%;border-top:1px solid var(--rule);border-left:0;
+    transform:translateY(103%)}
+  .drawer.on{transform:none}
+  .row .meta .opt{display:none}
+}
+</style>
+</head>
+<body>
+<div class="tri"><i></i><i></i><i></i></div>
+
+<header class="cmd">
+  <div class="brand">
+    <span class="eb">// Prompt Cards</span>
+    <b>提示词卡</b>
+  </div>
+  <nav id="nav">
+    <button data-view="cards" class="on">// Cards<i>卡片</i></button>
+    <button data-view="sessions">// Sessions<i>会话</i></button>
+    <button data-view="gen">// Generate<i>生成</i></button>
+  </nav>
+  <div class="cmd-right">
+    <div class="stat" id="cmdStat">No.--- │ --- 会话生效</div>
+  </div>
+  <button id="themeBtn">暗色模式</button>
+</header>
+
+<main>
+  <!-- ===== 卡片 ===== -->
+  <section class="view on" id="v-cards">
+    <div class="boards">
+      <div class="board"><div class="num" id="bCards">-</div><div class="lab">Cards<i>卡片总数</i></div></div>
+      <div class="board"><div class="num" id="bGlobal">-</div><div class="lab">Global<i>全局生效</i></div></div>
+      <div class="board"><div class="num" id="bKw">-</div><div class="lab">Keywords<i>带关键词</i></div></div>
+      <div class="board"><div class="num" id="bSess">-</div><div class="lab">Sessions<i>生效会话</i></div></div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-h">
+        <span class="eb">// Library</span><b>卡片库</b>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="refreshBtn">刷新</button>
+        <button class="btn" id="newBtn">新建</button>
+      </div>
+      <div class="rows" id="rows"></div>
+      <div class="empty" id="rowsEmpty" style="display:none"><b>NO DATA / 暂无卡片</b>点右上「新建」，或到「生成」页让 AI 帮你写第一张。</div>
+    </div>
+  </section>
+
+  <!-- ===== 会话 ===== -->
+  <section class="view" id="v-sessions">
+    <div class="sec" style="margin-top:0">
+      <div class="sec-h">
+        <span class="eb">// Active Sessions</span><b>会话启用状态</b>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="refreshBtn2">刷新</button>
+      </div>
+      <div class="hint" style="margin-bottom:14px">卡片按会话独立启用；关键词命中的卡会出现在这里，倒计时结束自动消失。</div>
+      <div class="rows" id="sessRows"></div>
+      <div class="empty" id="sessEmpty" style="display:none"><b>NO DATA / 暂无启用中的会话</b>在聊天里发「/卡 on 名字」，或让关键词命中一次。</div>
+    </div>
+  </section>
+
+  <!-- ===== 生成 ===== -->
+  <section class="view" id="v-gen">
+    <div class="sec" style="margin-top:0">
+      <div class="sec-h"><span class="eb">// Distill</span><b>材料提炼为角色卡</b></div>
+      <div class="hatchbar"></div>
+      <div class="f">
+        <label>Source / 材料<i>网址（百科、角色页）或一段描述文字</i></label>
+        <textarea id="genSrc" placeholder="https://zh.moegirl.org.cn/DeepSeek娘&#10;或直接贴一段角色描述……"></textarea>
+      </div>
+      <div class="f" style="max-width:320px">
+        <label>Name / 卡片名<i>可留空由 AI 起名</i></label>
+        <input id="genName" placeholder="如：小鲸">
+      </div>
+      <button class="btn" id="genBtn">开始提炼</button>
+      <div class="hint" style="margin-top:14px">使用 AstrBot 当前配置的默认 LLM；仅支持 http/https 公网网址。生成后先检查再保存入库。</div>
+    </div>
+  </section>
+</main>
+
+<!-- 编辑抽屉 -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-h">
+    <span class="eb" id="dMode">// Edit</span>
+    <b id="dTitle">编辑卡片</b>
+  </div>
+  <div class="drawer-b">
+    <div class="f">
+      <label>Name / 名字</label>
+      <input id="dName" maxlength="32" placeholder="不含空格，≤32 字">
+    </div>
+    <div class="f">
+      <label>Content / 提示词内容<i>{user} {time} {date} {weekday} 可用</i></label>
+      <textarea id="dContent" style="min-height:190px" placeholder="角色设定、语气文风、格式要求……"></textarea>
+    </div>
+    <div class="f">
+      <label>Keywords / 触发关键词<i>逗号分隔；re: 前缀按正则</i></label>
+      <input id="dKw" placeholder="如：古风,文言 或 re:早[上安]">
+    </div>
+    <div class="f">
+      <label>Priority / 优先级<i>数字小的先注入</i></label>
+      <input id="dPri" type="number" value="50">
+    </div>
+    <div class="f">
+      <div class="pair">
+        <div>
+          <label>Temp / 温度<i>留空=默认</i></label>
+          <input id="dTemp" type="number" step="0.1" min="0" max="2" placeholder="0~2">
+        </div>
+        <div>
+          <label>Length / 输出长度<i>留空=不限</i></label>
+          <input id="dLen" type="number" min="20" placeholder="字数，≥20">
+        </div>
+      </div>
+    </div>
+    <div class="f">
+      <label>Scope / 生效范围</label>
+      <div class="tog">
+        <button id="dEnabled" class="on">启用</button>
+        <button id="dDisabled">停用</button>
+      </div>
+      <div class="tog" style="margin-top:8px">
+        <button id="dGlobalOff" class="on">仅手动启用</button>
+        <button id="dGlobalOn">全局默认生效</button>
+      </div>
+    </div>
+  </div>
+  <div class="drawer-f">
+    <button class="btn danger" id="dDel">删除</button>
+    <button class="btn" id="dSave">保存</button>
+    <button class="btn ghost" id="dClose">关闭</button>
+  </div>
+</aside>
+
+<!-- 令牌门 -->
+<div class="gate on" id="gate">
+  <div class="gate-box">
+    <div class="tri2"><i style="background:var(--tri-1)"></i><i style="background:var(--tri-2)"></i><i style="background:var(--tri-3)"></i></div>
+    <span class="eb">// Access</span>
+    <h1>提示词卡控制台</h1>
+    <p>输入接入令牌以连接机器人后台。<br>令牌在 AstrBot 启动日志里（插件配置 webui_token 也可查看）。</p>
+    <div class="f"><input id="gateToken" type="password" placeholder="接入令牌" autocomplete="off"></div>
+    <button class="btn" id="gateBtn" style="width:100%;justify-content:center">进入</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let TOKEN = localStorage.getItem("pc_token") || "";
+let STATE = null;
+let EDIT = null; // null=新建, 否则原名字
+
+function toast(msg){
+  const el = document.createElement("div");
+  el.className = "t"; el.textContent = msg;
+  $("#toast").appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+async function api(path, opts = {}){
+  const r = await fetch(path, Object.assign({}, opts, {
+    headers: Object.assign({"Content-Type":"application/json","Authorization":"Bearer "+TOKEN}, opts.headers||{})
+  }));
+  if (r.status === 401){ $("#gate").classList.add("on"); throw new Error("令牌无效"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+function showGate(){ $("#gate").classList.add("on"); $("#gateToken").focus(); }
+
+/* ---- 主题 ---- */
+function setTheme(t){
+  document.documentElement.dataset.efTheme = t;
+  localStorage.setItem("pc_theme", t);
+  $("#themeBtn").textContent = t === "dark" ? "暗色模式" : "亮色模式";
+}
+$("#themeBtn").onclick = () => setTheme(document.documentElement.dataset.efTheme === "dark" ? "light" : "dark");
+setTheme(localStorage.getItem("pc_theme") || "dark");
+
+/* ---- 视图切换 ---- */
+$("#nav").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  document.querySelectorAll("#nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("on"));
+  $("#v-" + b.dataset.view).classList.add("on");
+});
+
+/* ---- 渲染 ---- */
+function renderState(){
+  STATE = STATE || {cards:{}, sessions:{}, stats:{}};
+  const s = STATE.stats || {};
+  $("#bCards").textContent = String(s.cards ?? 0).padStart(2, "0");
+  $("#bGlobal").textContent = String(s.global ?? 0).padStart(2, "0");
+  $("#bKw").textContent = String(s.keyworded ?? 0).padStart(2, "0");
+  $("#bSess").textContent = String(s.sessions_with_active ?? 0).padStart(2, "0");
+  $("#cmdStat").innerHTML = "No." + String(s.cards ?? 0).padStart(3,"0") + " │ <b>" + (s.sessions_with_active ?? 0) + "</b> 会话生效";
+
+  const rows = $("#rows"); rows.innerHTML = "";
+  const names = Object.keys(STATE.cards).sort((a,b) =>
+    (STATE.cards[a].priority ?? 50) - (STATE.cards[b].priority ?? 50) || a.localeCompare(b));
+  names.forEach((name, i) => {
+    const c = STATE.cards[name];
+    const row = document.createElement("div");
+    row.className = "row"; row.style.animationDelay = Math.min(i, 18) * 38 + "ms";
+    const metas = [];
+    metas.push("优先级" + (c.priority ?? 50));
+    if (c.temperature !== undefined && c.temperature !== null) metas.push("温度" + c.temperature);
+    if (c.length_limit) metas.push("长度" + c.length_limit + "字");
+    if (c.keywords && c.keywords.length) metas.push("关键词×" + c.keywords.length);
+    row.innerHTML =
+      '<span class="no">No.' + String(i+1).padStart(3,"0") + '</span>' +
+      '<span class="name">' + esc(name) + '</span>' +
+      '<span class="meta">' +
+        (c.global ? '<span class="tag solid-y">全局</span>' : '') +
+        (c.enabled ? '<span class="tag">启用</span>' : '<span class="tag dash">停用</span>') +
+        '<span class="opt">' + metas.map(esc).join('<span class="sep"> │ </span>') + '</span>' +
+      '</span>';
+    row.onclick = () => openEditor(name);
+    rows.appendChild(row);
+  });
+  $("#rowsEmpty").style.display = names.length ? "none" : "block";
+  rows.style.display = names.length ? "" : "none";
+
+  const sr = $("#sessRows"); sr.innerHTML = "";
+  const umos = Object.keys(STATE.sessions || {}).filter(u => Object.keys(STATE.sessions[u]).length);
+  umos.forEach((umo, i) => {
+    const st = STATE.sessions[umo];
+    const row = document.createElement("div");
+    row.className = "row sess"; row.style.cursor = "default";
+    row.style.animationDelay = Math.min(i, 18) * 38 + "ms";
+    const chips = Object.entries(st).map(([n, v]) => {
+      const left = v && v.remaining != null ? " · 余" + v.remaining : "";
+      return '<span class="c">' + esc(n) + esc(left) +
+             '<button data-off="' + esc(n) + '">停用</button></span>';
+    }).join("");
+    row.innerHTML =
+      '<div style="min-width:0"><div class="umo">' + esc(umo) + '</div>' +
+      '<div class="chips">' + (chips || '<span class="hint">无启用卡片</span>') + '</div></div>' +
+      '<span class="meta"><button class="btn ghost" data-peek="' + esc(umo) + '" style="padding:6px 12px;font-size:12px">预览注入</button>' +
+      '<button class="btn danger" data-clear="' + esc(umo) + '" style="padding:6px 12px;font-size:12px">清空</button></span>';
+    row.querySelector("[data-clear]").onclick = async ev => {
+      ev.stopPropagation();
+      await api("/api/session/clear", {method:"POST", body: JSON.stringify({umo})});
+      toast("已清空该会话的启用卡片"); load();
+    };
+    row.querySelectorAll("[data-off]").forEach(b => b.onclick = async ev => {
+      ev.stopPropagation();
+      await api("/api/session/off", {method:"POST", body: JSON.stringify({umo, name: b.dataset.off})});
+      toast("已停用 " + b.dataset.off); load();
+    });
+    row.querySelector("[data-peek]").onclick = async ev => {
+      ev.stopPropagation();
+      const j = await api("/api/peek?umo=" + encodeURIComponent(umo));
+      const names2 = (j.names || []).join("、") || "（无）";
+      const tempLine = j.temperature != null ? "｜温度 " + j.temperature + "（" + j.temperature_from + "）" : "";
+      toast("注入预览已显示在下方");
+      let panel = document.getElementById("peekPanel");
+      if (!panel){
+        panel = document.createElement("div"); panel.id = "peekPanel";
+        panel.style.cssText = "background:var(--panel);border:1px solid var(--rule);padding:16px;margin-top:10px;white-space:pre-wrap;font-size:13px;line-height:1.7";
+        row.after(panel);
+      } else panel.innerHTML = "";
+      panel.innerHTML = '<span class="eb">// Injection Preview</span><b style="display:block;margin:4px 0 10px">' +
+        esc(names2) + esc(tempLine) + '</b>' + esc(j.injection || "（空）");
+    };
+    sr.appendChild(row);
+  });
+  $("#sessEmpty").style.display = umos.length ? "none" : "block";
+  sr.style.display = umos.length ? "" : "none";
+}
+async function load(){
+  try{
+    STATE = await api("/api/state");
+    renderState();
+  }catch(e){ if (e.message !== "令牌无效") toast(e.message); }
+}
+
+/* ---- 编辑抽屉 ---- */
+function setTog(onBtn, offBtn, val){
+  $(onBtn).classList.toggle("on", val);
+  $(offBtn).classList.toggle("on", !val);
+}
+function openEditor(name){
+  EDIT = name || null;
+  const c = name ? STATE.cards[name] : null;
+  $("#dMode").textContent = name ? "// Edit" : "// New";
+  $("#dTitle").textContent = name ? "编辑卡片" : "新建卡片";
+  $("#dName").value = name || "";
+  $("#dName").disabled = !!name;
+  $("#dContent").value = c ? c.content : "";
+  $("#dKw").value = c && c.keywords ? c.keywords.join(",") : "";
+  $("#dPri").value = c ? (c.priority ?? 50) : 50;
+  $("#dTemp").value = c && c.temperature != null ? c.temperature : "";
+  $("#dLen").value = c && c.length_limit ? c.length_limit : "";
+  setTog("#dEnabled", "#dDisabled", c ? c.enabled !== false : true);
+  setTog("#dGlobalOn", "#dGlobalOff", c ? !!c.global : false);
+  $("#dDel").style.display = name ? "" : "none";
+  $("#scrim").classList.add("on"); $("#drawer").classList.add("on");
+}
+function closeEditor(){ $("#scrim").classList.remove("on"); $("#drawer").classList.remove("on"); }
+$("#newBtn").onclick = () => openEditor(null);
+$("#dClose").onclick = closeEditor;
+$("#scrim").onclick = closeEditor;
+$("#refreshBtn").onclick = load; $("#refreshBtn2").onclick = load;
+
+$("#dSave").onclick = async () => {
+  const name = $("#dName").value.trim();
+  const content = $("#dContent").value.trim();
+  if (!name){ toast("名字不能为空"); return; }
+  if (!content){ toast("内容不能为空"); return; }
+  try{
+    await api("/api/card", {method:"POST", body: JSON.stringify({
+      name, content,
+      keywords: $("#dKw").value.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
+      priority: $("#dPri").value === "" ? 50 : Number($("#dPri").value),
+      temperature: $("#dTemp").value === "" ? null : Number($("#dTemp").value),
+      length_limit: $("#dLen").value === "" ? null : Number($("#dLen").value),
+      enabled: $("#dEnabled").classList.contains("on"),
+      global: $("#dGlobalOn").classList.contains("on"),
+    })});
+    toast("已保存 " + name);
+    closeEditor(); load();
+  }catch(e){ toast(e.message); }
+};
+let DELARMED = false;
+$("#dDel").onclick = async () => {
+  if (!DELARMED){ DELARMED = true; $("#dDel").textContent = "确认删除？";
+    setTimeout(() => { DELARMED = false; $("#dDel").textContent = "删除"; }, 2600); return; }
+  DELARMED = false; $("#dDel").textContent = "删除";
+  try{
+    await api("/api/card/" + encodeURIComponent(EDIT), {method:"DELETE"});
+    toast("已删除 " + EDIT); closeEditor(); load();
+  }catch(e){ toast(e.message); }
+};
+
+/* ---- 生成 ---- */
+$("#genBtn").onclick = async () => {
+  const src = $("#genSrc").value.trim();
+  if (!src){ toast("先填材料：网址或一段描述"); return; }
+  const btn = $("#genBtn");
+  btn.disabled = true; btn.textContent = "提炼中……";
+  try{
+    const j = await api("/api/gen", {method:"POST",
+      body: JSON.stringify({source: src, name: $("#genName").value.trim() || null})});
+    toast("已生成「" + j.name + "」，检查后保存");
+    document.querySelectorAll("#nav button").forEach(x => x.classList.toggle("on", x.dataset.view === "cards"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("on"));
+    $("#v-cards").classList.add("on");
+    await load();
+    STATE.cards[j.name] = {content: j.content, keywords: [], priority: 50, enabled: true};
+    openEditor(j.name);
+    $("#genSrc").value = ""; $("#genName").value = "";
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; btn.textContent = "开始提炼"; }
+};
+
+/* ---- 令牌门 ---- */
+async function tryEnter(t){
+  TOKEN = t; localStorage.setItem("pc_token", t);
+  try{ await load(); $("#gate").classList.remove("on"); toast("已连接"); }
+  catch(e){ toast(e.message === "令牌无效" ? "令牌无效" : e.message); }
+}
+$("#gateBtn").onclick = () => tryEnter($("#gateToken").value.trim());
+$("#gateToken").addEventListener("keydown", e => { if (e.key === "Enter") tryEnter(e.target.value.trim()); });
+if (TOKEN) tryEnter(TOKEN);
+</script>
+</body>
+</html>

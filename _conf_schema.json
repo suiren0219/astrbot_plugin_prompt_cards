@@ -67,5 +67,34 @@
     "type": "string",
     "default": "",
     "hint": "逗号分隔。is_admin 判定不可用时的兜底"
+  },
+  "webui": {
+    "type": "object",
+    "description": "🖥 WebUI 控制台",
+    "hint": "浏览器打开控制台可视化管理卡片；默认只监听本机",
+    "items": {
+      "webui_enable": {
+        "description": "启动 WebUI",
+        "type": "bool",
+        "default": true
+      },
+      "webui_host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "0.0.0.0=允许局域网访问（务必确保令牌已配置）"
+      },
+      "webui_port": {
+        "description": "端口",
+        "type": "int",
+        "default": 6199
+      },
+      "webui_token": {
+        "description": "接入令牌",
+        "type": "string",
+        "default": "",
+        "hint": "留空则首次启动自动生成并写回这里，启动日志也会打印"
+      }
+    }
   }
 }
