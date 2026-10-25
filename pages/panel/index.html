@@ -383,6 +383,21 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+/* AstrBot 面板的 iframe 是 sandbox="allow-scripts allow-forms allow-downloads"（无
+   allow-same-origin）→ 不透明源里 localStorage 访问直接抛 SecurityError，会炸掉整个
+   脚本。所有存取走垫片：沙箱里降级为内存（本次会话内仍生效）。 */
+const storage = (() => {
+  try{
+    const k = "__pc_probe__";
+    localStorage.setItem(k, "1"); localStorage.removeItem(k);
+    return localStorage;
+  }catch(e){
+    const mem = new Map();
+    return {getItem: k => mem.has(k) ? mem.get(k) : null,
+            setItem: (k, v) => mem.set(k, String(v)),
+            removeItem: k => mem.delete(k)};
+  }
+})();
 /* 传输层：在 AstrBot 面板 iframe 里走官方 bridge；直接打开（独立控制台）走 fetch（无鉴权） */
 const PLUGIN_NAMES = ["prompt_cards", "astrbot_plugin_prompt_cards"];
 let MODE = null;            // "panel" | "standalone"
@@ -439,22 +454,36 @@ function normResp(p){
   return p === undefined ? {} : p;
 }
 async function bridgeCall(route, method, query, body){
+  const tried = [];
   for (const ep of endpointCandidates(route)){
     try{
       const raw = method === "GET"
         ? await BRIDGE.apiGet(ep, query && Object.keys(query).length ? query : undefined)
         : await BRIDGE.apiPost(ep, body || {});
       if (raw && typeof raw === "object" &&
-          routeMissing((raw.error || "") + " " + (raw.message || "") + " " + (raw.detail || "")))
+          routeMissing((raw.error || "") + " " + (raw.message || "") + " " + (raw.detail || ""))){
+        tried.push(ep + "→未找到路由");
         continue;
+      }
       if (!EPSTYLE) EPSTYLE = ep.startsWith("page/") ? "page" : ep.startsWith("/") ? "slash" : "bare";
       return normResp(raw);
     }catch(e){
-      if (routeMissing(e && e.message)) continue;
+      if (routeMissing(e && e.message)){ tried.push(ep + "→404"); continue; }
       throw e;
     }
   }
-  throw new Error("未找到可用的面板 API 路由");
+  throw new Error("面板 API 全部端点失败：" + tried.join("、"));
+}
+/* 面板主题跟随：dashboard 经 bridge 下发 context.isDark，并写 data-theme 属性 */
+function syncThemeFromBridge(){
+  try{
+    const ctx = (BRIDGE.getContext && BRIDGE.getContext()) || null;
+    if (ctx && typeof ctx.isDark === "boolean")
+      applyTheme(ctx.isDark ? "dark" : "light");
+    if (typeof BRIDGE.onContext === "function")
+      BRIDGE.onContext(c => { if (c && typeof c.isDark === "boolean")
+        applyTheme(c.isDark ? "dark" : "light"); });
+  }catch(e){ /* 主题跟随失败不影响功能 */ }
 }
 /* ---- 独立通道：webui.py 的 aiohttp 服务（旧版 AstrBot 或端口直连） ---- */
 const STANDALONE = {
@@ -491,16 +520,16 @@ function applyTheme(t){
   $("#themeBtn").textContent = t === "dark" ? "暗色模式" : "亮色模式";
 }
 function setTheme(t){
-  localStorage.setItem(THEME_KEY, t);
+  try{ storage.setItem(THEME_KEY, t); }catch(e){}
   applyTheme(t);
 }
 $("#themeBtn").onclick = () => setTheme(document.documentElement.dataset.efTheme === "dark" ? "light" : "dark");
-const savedTheme = localStorage.getItem(THEME_KEY);
+const savedTheme = storage.getItem(THEME_KEY);
 if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme);
 else{
   applyTheme(sysDark.matches ? "dark" : "light");
   sysDark.addEventListener("change", e => {
-    if (!localStorage.getItem(THEME_KEY)) applyTheme(e.matches ? "dark" : "light");
+    if (!storage.getItem(THEME_KEY)) applyTheme(e.matches ? "dark" : "light");
   });
 }
 
@@ -714,12 +743,16 @@ function showUnreachable(detail){
 }
 $("#gateBtn").onclick = () => location.reload();
 async function boot(){
-  const b = await waitForBridge(2500);
+  const b = await waitForBridge(3000);
   if (usableBridge(b)){
     MODE = "panel"; BRIDGE = b;
+    syncThemeFromBridge();
     $("#gate").classList.remove("on");
     try{ await load(); }
-    catch(e){ toast("面板接口调用失败：" + e.message); }
+    catch(e){
+      showUnreachable("面板接口调用失败：" + e.message);
+      toast("面板接口调用失败：" + e.message);
+    }
     return;
   }
   MODE = "standalone";

@@ -2,6 +2,18 @@
 
 所有 notable changes 记录在本文件。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.5.3] - 2026-10-25
+
+### 修复
+- **AstrBot 面板里页面卡死、永远进不了正式界面**（真实部署上定位）：AstrBot v4.24+ 的插件页
+  iframe 是 `sandbox="allow-scripts allow-forms allow-downloads"`（**无 allow-same-origin**），
+  页面运行在不透明源里，访问 `localStorage` 直接抛 `SecurityError`——脚本第一行就崩了，
+  bridge 不轮询、请求一个不发，页面永远停在门上。现所有存取走安全垫片（沙箱里降级为内存），
+  已在与 v4.29 完全一致的沙箱复现环境（同 sandbox 属性 + 容器内导出的真实 bridge 脚本 +
+  父窗口 postMessage 协议）里全链路验证通过。
+- 面板模式主题跟随 AstrBot 面板明暗（bridge context.isDark）；bridge 端点全部失败时显示
+  尝试过的端点列表，便于诊断；bridge 轮询放宽到 3 秒。
+
 ## [v1.5.2] - 2026-10-25
 
 ### 变更

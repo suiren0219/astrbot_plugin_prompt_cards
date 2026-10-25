@@ -184,7 +184,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.2")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.3")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
