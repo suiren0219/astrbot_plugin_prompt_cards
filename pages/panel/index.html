@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>提示词卡 / PROMPT CARDS</title>
 <style>
 /* ===== Endfield UI tokens（skill 规范：纸/墨/唯一强调黄/切角/细线/无圆角无投影） ===== */
@@ -14,14 +15,21 @@
   --cut:26px;
 }
 html[data-ef-theme="dark"]{
+  color-scheme:dark; /* 滚动条/输入框微调钮等原生控件跟随深色 */
   --paper:#191919; --panel:#222222; --ink:#EDEDED; --ink2:#9E9E9E;
   --rule:#353535; --chip:#2C2C2C; --hatch:rgba(237,237,237,.20);
   --grid:rgba(237,237,237,.045); --scrim:rgba(0,0,0,.78);
 }
 html[data-ef-theme="light"]{
+  color-scheme:light;
   --paper:#F4F4F2; --panel:#FFFFFF; --ink:#161616; --ink2:#5C5C5C;
   --rule:#D9D9D6; --chip:#E6E6E2; --hatch:rgba(22,22,22,.20);
   --grid:rgba(22,22,22,.05); --scrim:rgba(22,22,22,.55);
+}
+/* 自托管 Saira（OFL），与页面同源，无外部请求 */
+@font-face{
+  font-family:"Saira"; font-style:normal; font-weight:100 900; font-display:swap;
+  src:url("/fonts/Saira.ttf") format("truetype");
 }
 *{box-sizing:border-box;border-radius:0 !important;margin:0}
 html,body{height:100%}
@@ -360,7 +368,7 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
     <div class="tri2"><i style="background:var(--tri-1)"></i><i style="background:var(--tri-2)"></i><i style="background:var(--tri-3)"></i></div>
     <span class="eb">// Access</span>
     <h1>提示词卡控制台</h1>
-    <p>输入接入令牌以连接机器人后台。<br>令牌在 AstrBot 启动日志里（插件配置 webui_token 也可查看）。</p>
+    <p>从 AstrBot 后台的插件页面打开时无需令牌。<br>直接访问本页（独立控制台）需输入接入令牌：启动日志里有，插件配置 webui_token 也可查看。</p>
     <div class="f"><input id="gateToken" type="password" placeholder="接入令牌" autocomplete="off"></div>
     <button class="btn" id="gateBtn" style="width:100%;justify-content:center">进入</button>
   </div>
@@ -372,6 +380,10 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+/* 传输层：在 AstrBot 面板 iframe 里走官方 bridge；直接打开（独立控制台）走 fetch+令牌 */
+const PLUGIN_NAMES = ["prompt_cards", "astrbot_plugin_prompt_cards"];
+let MODE = null;            // "panel" | "standalone"
+let BRIDGE = null, EPSTYLE = null;
 let TOKEN = localStorage.getItem("pc_token") || "";
 let STATE = null;
 let EDIT = null; // null=新建, 否则原名字
@@ -382,25 +394,115 @@ function toast(msg){
   $("#toast").appendChild(el);
   setTimeout(() => el.remove(), 3200);
 }
-async function api(path, opts = {}){
-  const r = await fetch(path, Object.assign({}, opts, {
-    headers: Object.assign({"Content-Type":"application/json","Authorization":"Bearer "+TOKEN}, opts.headers||{})
-  }));
+/* ---- bridge 获取（Dashboard 异步注入，轮询等待） ---- */
+function getBridge(){
+  if (window.AstrBotPluginPage) return window.AstrBotPluginPage;
+  try{
+    if (window.parent && window.parent !== window && window.parent.AstrBotPluginPage)
+      return window.parent.AstrBotPluginPage;
+  }catch(e){ /* 跨域时 parent 不可读 */ }
+  return null;
+}
+function usableBridge(b){ return !!b && typeof b.apiGet === "function" && typeof b.apiPost === "function"; }
+async function waitForBridge(ms){
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms){
+    const b = getBridge();
+    if (usableBridge(b)) return b;
+    await new Promise(r => setTimeout(r, 80));
+  }
+  return getBridge();
+}
+/* ---- 面板通道：同一路由多种写法逐个试（Dashboard 拼前缀的方式随版本变化） ---- */
+function endpointCandidates(route){
+  const clean = String(route).replace(/^\/+/, "");
+  const out = [];
+  if (EPSTYLE === "page") out.push("page/" + clean);
+  if (EPSTYLE === "bare") out.push(clean);
+  if (EPSTYLE === "slash") out.push("/" + clean);
+  out.push("page/" + clean, clean, "/" + clean);
+  for (const n of PLUGIN_NAMES) out.push(n + "/page/" + clean);
+  return [...new Set(out.filter(Boolean))];
+}
+function routeMissing(text){
+  const s = String(text || "").toLowerCase();
+  return /未找到.*路由|路由不存在|route.*not.*found|not.*found.*route|http\s*404|\b404\b/.test(s);
+}
+function normResp(p){
+  if (p && typeof p === "object" && Object.prototype.hasOwnProperty.call(p, "success")){
+    if (!p.success) throw new Error(p.error || p.message || "请求失败");
+    return p.data === undefined ? {} : p.data;
+  }
+  if (p && typeof p === "object" && p.error) throw new Error(p.error);
+  return p === undefined ? {} : p;
+}
+async function bridgeCall(route, method, query, body){
+  for (const ep of endpointCandidates(route)){
+    try{
+      const raw = method === "GET"
+        ? await BRIDGE.apiGet(ep, query && Object.keys(query).length ? query : undefined)
+        : await BRIDGE.apiPost(ep, body || {});
+      if (raw && typeof raw === "object" &&
+          routeMissing((raw.error || "") + " " + (raw.message || "") + " " + (raw.detail || "")))
+        continue;
+      if (!EPSTYLE) EPSTYLE = ep.startsWith("page/") ? "page" : ep.startsWith("/") ? "slash" : "bare";
+      return normResp(raw);
+    }catch(e){
+      if (routeMissing(e && e.message)) continue;
+      throw e;
+    }
+  }
+  throw new Error("未找到可用的面板 API 路由");
+}
+/* ---- 独立通道：webui.py 的 aiohttp 服务（旧版 AstrBot 或端口直连） ---- */
+const STANDALONE = {
+  "state":         ()  => ({method:"GET",    url:"/api/state"}),
+  "card":          ()  => ({method:"POST",   url:"/api/card"}),
+  "card/del":      n   => ({method:"DELETE", url:"/api/card/" + encodeURIComponent(n)}),
+  "session/clear": ()  => ({method:"POST",   url:"/api/session/clear"}),
+  "session/off":   ()  => ({method:"POST",   url:"/api/session/off"}),
+  "peek":          u   => ({method:"GET",    url:"/api/peek?umo=" + encodeURIComponent(u)}),
+  "gen":           ()  => ({method:"POST",   url:"/api/gen"}),
+};
+async function standaloneCall(route, arg, body){
+  const spec = STANDALONE[route](arg);
+  const r = await fetch(spec.url, {
+    method: spec.method,
+    headers: {"Content-Type":"application/json","Authorization":"Bearer " + TOKEN},
+    body: spec.method === "GET" ? undefined : JSON.stringify(body || {})
+  });
   if (r.status === 401){ $("#gate").classList.add("on"); throw new Error("令牌无效"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
   return j;
 }
+async function api(route, opts = {}){
+  if (MODE === "panel") return bridgeCall(route, opts.method || "GET", opts.query, opts.body);
+  return standaloneCall(route, opts.arg, opts.body);
+}
 function showGate(){ $("#gate").classList.add("on"); $("#gateToken").focus(); }
 
-/* ---- 主题 ---- */
-function setTheme(t){
+/* ---- 主题：默认跟随系统深色/浅色，手动切换后记住选择 ----
+   存储键带 v2：旧原型页在同一端口存过 pc_theme=light，沿用会把用户钉死在亮色 */
+const THEME_KEY = "pc_theme_v2";
+const sysDark = matchMedia("(prefers-color-scheme: dark)");
+function applyTheme(t){
   document.documentElement.dataset.efTheme = t;
-  localStorage.setItem("pc_theme", t);
   $("#themeBtn").textContent = t === "dark" ? "暗色模式" : "亮色模式";
 }
+function setTheme(t){
+  localStorage.setItem(THEME_KEY, t);
+  applyTheme(t);
+}
 $("#themeBtn").onclick = () => setTheme(document.documentElement.dataset.efTheme === "dark" ? "light" : "dark");
-setTheme(localStorage.getItem("pc_theme") || "dark");
+const savedTheme = localStorage.getItem(THEME_KEY);
+if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme);
+else{
+  applyTheme(sysDark.matches ? "dark" : "light");
+  sysDark.addEventListener("change", e => {
+    if (!localStorage.getItem(THEME_KEY)) applyTheme(e.matches ? "dark" : "light");
+  });
+}
 
 /* ---- 视图切换 ---- */
 $("#nav").addEventListener("click", e => {
@@ -466,17 +568,23 @@ function renderState(){
       '<button class="btn danger" data-clear="' + esc(umo) + '" style="padding:6px 12px;font-size:12px">清空</button></span>';
     row.querySelector("[data-clear]").onclick = async ev => {
       ev.stopPropagation();
-      await api("/api/session/clear", {method:"POST", body: JSON.stringify({umo})});
-      toast("已清空该会话的启用卡片"); load();
+      try{
+        await api("session/clear", {method:"POST", body:{umo}});
+        toast("已清空该会话的启用卡片");
+      }catch(e){ toast(e.message); }
+      load().catch(e => toast(e.message));
     };
     row.querySelectorAll("[data-off]").forEach(b => b.onclick = async ev => {
       ev.stopPropagation();
-      await api("/api/session/off", {method:"POST", body: JSON.stringify({umo, name: b.dataset.off})});
-      toast("已停用 " + b.dataset.off); load();
+      try{
+        await api("session/off", {method:"POST", body:{umo, name: b.dataset.off}});
+        toast("已停用 " + b.dataset.off);
+      }catch(e){ toast(e.message); }
+      load().catch(e => toast(e.message));
     });
     row.querySelector("[data-peek]").onclick = async ev => {
       ev.stopPropagation();
-      const j = await api("/api/peek?umo=" + encodeURIComponent(umo));
+      const j = await api("peek", {arg: umo, query:{umo}});
       const names2 = (j.names || []).join("、") || "（无）";
       const tempLine = j.temperature != null ? "｜温度 " + j.temperature + "（" + j.temperature_from + "）" : "";
       toast("注入预览已显示在下方");
@@ -494,11 +602,10 @@ function renderState(){
   $("#sessEmpty").style.display = umos.length ? "none" : "block";
   sr.style.display = umos.length ? "" : "none";
 }
+/* 错误向上抛：401 时独立通道已弹令牌门，调用方负责提示；吞掉会让「已连接」盖在失败上 */
 async function load(){
-  try{
-    STATE = await api("/api/state");
-    renderState();
-  }catch(e){ if (e.message !== "令牌无效") toast(e.message); }
+  STATE = await api("state");
+  renderState();
 }
 
 /* ---- 编辑抽屉 ---- */
@@ -541,7 +648,8 @@ document.querySelectorAll(".tog").forEach(tog => {
     tog.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
   });
 });
-$("#refreshBtn").onclick = load; $("#refreshBtn2").onclick = load;
+const refresh = () => load().catch(e => toast(e.message));
+$("#refreshBtn").onclick = refresh; $("#refreshBtn2").onclick = refresh;
 
 $("#dSave").onclick = async () => {
   const name = $("#dName").value.trim();
@@ -549,7 +657,7 @@ $("#dSave").onclick = async () => {
   if (!name){ toast("名字不能为空"); return; }
   if (!content){ toast("内容不能为空"); return; }
   try{
-    await api("/api/card", {method:"POST", body: JSON.stringify({
+    await api("card", {method:"POST", body:{
       name, content,
       keywords: $("#dKw").value.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
       priority: $("#dPri").value === "" ? 50 : Number($("#dPri").value),
@@ -562,9 +670,9 @@ $("#dSave").onclick = async () => {
           : $("#dDialAggr").classList.contains("on") ? "激进" : null,
       tone: $("#dToneRational").classList.contains("on") ? "理性"
           : $("#dToneEmotional").classList.contains("on") ? "感性" : null,
-    })});
+    }});
     toast("已保存 " + name);
-    closeEditor(); load();
+    closeEditor(); load().catch(e => toast(e.message));
   }catch(e){ toast(e.message); }
 };
 let DELARMED = false;
@@ -573,8 +681,8 @@ $("#dDel").onclick = async () => {
     setTimeout(() => { DELARMED = false; $("#dDel").textContent = "删除"; }, 2600); return; }
   DELARMED = false; $("#dDel").textContent = "删除";
   try{
-    await api("/api/card/" + encodeURIComponent(EDIT), {method:"DELETE"});
-    toast("已删除 " + EDIT); closeEditor(); load();
+    await api("card/del", {arg: EDIT, method:"POST", body:{name: EDIT}});
+    toast("已删除 " + EDIT); closeEditor(); load().catch(e => toast(e.message));
   }catch(e){ toast(e.message); }
 };
 
@@ -585,8 +693,8 @@ $("#genBtn").onclick = async () => {
   const btn = $("#genBtn");
   btn.disabled = true; btn.textContent = "提炼中……";
   try{
-    const j = await api("/api/gen", {method:"POST",
-      body: JSON.stringify({source: src, name: $("#genName").value.trim() || null})});
+    const j = await api("gen", {method:"POST",
+      body:{source: src, name: $("#genName").value.trim() || null}});
     toast("已生成「" + j.name + "」，检查后保存");
     document.querySelectorAll("#nav button").forEach(x => x.classList.toggle("on", x.dataset.view === "cards"));
     document.querySelectorAll(".view").forEach(v => v.classList.remove("on"));
@@ -599,7 +707,7 @@ $("#genBtn").onclick = async () => {
   finally{ btn.disabled = false; btn.textContent = "开始提炼"; }
 };
 
-/* ---- 令牌门 ---- */
+/* ---- 启动：面板 bridge 优先（免令牌），拿不到再走独立控制台 ---- */
 async function tryEnter(t){
   TOKEN = t; localStorage.setItem("pc_token", t);
   try{ await load(); $("#gate").classList.remove("on"); toast("已连接"); }
@@ -607,7 +715,19 @@ async function tryEnter(t){
 }
 $("#gateBtn").onclick = () => tryEnter($("#gateToken").value.trim());
 $("#gateToken").addEventListener("keydown", e => { if (e.key === "Enter") tryEnter(e.target.value.trim()); });
-if (TOKEN) tryEnter(TOKEN);
+async function boot(){
+  const b = await waitForBridge(1500);
+  if (usableBridge(b)){
+    MODE = "panel"; BRIDGE = b;
+    $("#gate").classList.remove("on");
+    try{ await load(); }
+    catch(e){ toast("面板接口调用失败：" + e.message); }
+    return;
+  }
+  MODE = "standalone";
+  if (TOKEN) tryEnter(TOKEN); else showGate();
+}
+boot();
 </script>
 </body>
 </html>

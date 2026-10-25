@@ -1,17 +1,27 @@
-"""提示词卡 WebUI：内嵌的 Endfield 风格控制台（单页，无构建步骤）。
+"""提示词卡独立控制台（aiohttp，服务器直连场景与 AstrBot <4.24.1 的兜底）。
 
 * 仅在插件配置开启时随插件启动，默认只绑定 127.0.0.1；
 * 所有 /api/* 都要求 Authorization: Bearer <令牌>（面板 webui_token，
   留空则插件首次启动自动生成并写入配置、打印到日志）；
-* 页面本体在 web/index.html，字体在 web/fonts/（Saira，OFL 许可）。
+* 页面本体与面板页共用 pages/panel/index.html（同一页面双通道：
+  面板里走官方 bridge，直连时走这里的 fetch+令牌）；
+* 卡片校验/合并逻辑与面板页共用 page_api.apply_card_patch，避免两份规则漂移。
 """
 import hmac
 import json
 import os
+import sys
 
 from aiohttp import web
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+# main.py 先加载 page_api 再加载本模块；找不到说明加载顺序被破坏，宁可不启用
+_page_core = sys.modules.get("_prompt_cards_page_api")
+if _page_core is None:
+    raise ImportError("page_api.py 必须先于 webui.py 加载")
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+WEB_DIR = os.path.join(PLUGIN_DIR, "web")              # 字体等静态资源
+PANEL_DIR = os.path.join(PLUGIN_DIR, "pages", "panel") # 与面板页共用的页面
 MIME = {".html": "text/html", ".ttf": "font/ttf", ".txt": "text/plain"}
 
 
@@ -64,7 +74,7 @@ class CardWebUI:
 
     async def _index(self, request):
         if self._index_html is None:
-            with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as f:
+            with open(os.path.join(PANEL_DIR, "index.html"), "r", encoding="utf-8") as f:
                 self._index_html = f.read()
         return web.Response(text=self._index_html, content_type="text/html", charset="utf-8")
 
@@ -101,81 +111,14 @@ class CardWebUI:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "请求体不是有效 JSON"}, status=400)
+        # 校验与合并走 page_api 的同一份 PATCH 语义，独立通道与面板页规则永不漂移
+        card, err = _page_core.apply_card_patch(self.plugin, data)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        self.plugin._save()
         name = str(data.get("name") or "").strip()
-        content = str(data.get("content") or "").strip()
-        if not name or " " in name or len(name) > 32:
-            return web.json_response({"error": "名字不能为空、不含空格、不超过 32 字"}, status=400)
-        if not content:
-            return web.json_response({"error": "内容不能为空"}, status=400)
-        if len(content) > 20000:
-            return web.json_response({"error": "内容过长（上限 2 万字）"}, status=400)
-        p = self.plugin
-        card = dict(p._cards.get(name) or {"keywords": [], "priority": 50, "enabled": True})
-        card["content"] = content
-        # 只覆盖请求体里显式出现的字段：缺席=保持原值（PATCH 语义），
-        # 显式 null/空=用户清空。否则部分保存会悄悄抹掉没提交的设定。
-        if "keywords" in data:
-            card["keywords"] = [str(k).strip() for k in (data.get("keywords") or [])
-                                if str(k).strip()]
-        if "priority" in data:
-            try:
-                card["priority"] = int(data.get("priority"))
-            except (TypeError, ValueError):
-                card["priority"] = 50
-        if "temperature" in data:
-            temp = data.get("temperature")
-            if temp in (None, ""):
-                card.pop("temperature", None)
-            else:
-                try:
-                    temp = float(temp)
-                    if not 0 <= temp <= 2:
-                        raise ValueError
-                    card["temperature"] = temp
-                except (TypeError, ValueError):
-                    return web.json_response({"error": "温度需在 0~2 之间"}, status=400)
-        if "length_limit" in data:
-            limit = data.get("length_limit")
-            if limit in (None, ""):
-                card.pop("length_limit", None)
-            else:
-                try:
-                    limit = int(limit)
-                    if limit < 20:
-                        raise ValueError
-                    card["length_limit"] = limit
-                except (TypeError, ValueError):
-                    return web.json_response({"error": "输出长度需为不小于 20 的整数"}, status=400)
-        if "enabled" in data:
-            card["enabled"] = bool(data.get("enabled"))
-        if "global" in data:
-            card["global"] = bool(data.get("global"))
-        if "mode" in data:
-            if data.get("mode") in ("persona", "overlay"):
-                card["mode"] = data.get("mode")
-            elif data.get("mode") in (None, "", "overlay"):
-                card.pop("mode", None)
-            else:
-                return web.json_response({"error": "mode 仅支持 persona/overlay"}, status=400)
-        if "dial" in data:
-            dial = data.get("dial")
-            if dial in ("保守", "激进"):
-                card["dial"] = dial
-            elif dial in (None, "", "标准"):
-                card.pop("dial", None)
-            else:
-                return web.json_response({"error": "dial 仅支持 保守/标准/激进"}, status=400)
-        if "tone" in data:
-            tone = data.get("tone")
-            if tone in ("理性", "感性"):
-                card["tone"] = tone
-            elif tone in (None, "", "均衡"):
-                card.pop("tone", None)
-            else:
-                return web.json_response({"error": "tone 仅支持 理性/均衡/感性"}, status=400)
-        p._cards[name] = card
-        p._save()
-        self.logger.info("[prompt_cards] WebUI 保存卡片「%s」（%d 字）", name, len(content))
+        self.logger.info("[prompt_cards] WebUI 保存卡片「%s」（%d 字）",
+                         name, len(str(card.get("content") or "")))
         return web.json_response({"ok": True, "name": name})
 
     async def _del_card(self, request):

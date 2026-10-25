@@ -62,7 +62,17 @@ def _load_side_module(mod_name: str, filename: str):
     return None
 
 
-webui_mod = _load_side_module("_prompt_cards_webui", "webui.py")
+page_api_mod = None
+try:
+    page_api_mod = _load_side_module("_prompt_cards_page_api", "page_api.py")
+except Exception as _e:  # 面板页加载失败不影响插件本体
+    logger.error(f"[prompt_cards] page_api.py 导入失败，面板页不可用: {_e}")
+
+try:
+    webui_mod = _load_side_module("_prompt_cards_webui", "webui.py")
+except Exception as _e:  # webui 依赖缺失时只关控制台，不影响插件本体
+    webui_mod = None
+    logger.error(f"[prompt_cards] webui.py 导入失败，WebUI 不可用: {_e}")
 
 CARD_NAME_MAX = 32  # 卡片名字长度上限（不含内容），防止一整段话被当成名字
 
@@ -174,7 +184,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.4.0")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.0")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -240,6 +250,12 @@ class PromptCardsPlugin(Star):
     async def initialize(self):
         logger.info("[prompt_cards] 插件已加载，卡片 %d 张，有启用状态的会话 %d 个",
                     len(self._cards), len(self._sessions))
+        # AstrBot ≥4.24.1：官方「插件 Pages」——面板里直接打开 pages/panel/，免端口免令牌
+        if page_api_mod:
+            try:
+                page_api_mod.CardPageApi(self, logger).register()
+            except Exception as e:
+                logger.warning(f"[prompt_cards] 面板页路由注册失败: {e}")
         await self._start_webui()
 
     async def _start_webui(self):
