@@ -67,28 +67,5 @@
     "type": "string",
     "default": "",
     "hint": "逗号分隔。is_admin 判定不可用时的兜底"
-  },
-  "webui": {
-    "type": "object",
-    "description": "🖥 WebUI 控制台",
-    "hint": "浏览器打开控制台可视化管理卡片；默认只监听本机",
-    "items": {
-      "webui_enable": {
-        "description": "启动 WebUI",
-        "type": "bool",
-        "default": true
-      },
-      "webui_host": {
-        "description": "监听地址",
-        "type": "string",
-        "default": "127.0.0.1",
-        "hint": "127.0.0.1=仅本机访问；控制台无鉴权，不要改成 0.0.0.0 暴露到不可信网络"
-      },
-      "webui_port": {
-        "description": "端口",
-        "type": "int",
-        "default": 6199
-      }
-    }
   }
 }

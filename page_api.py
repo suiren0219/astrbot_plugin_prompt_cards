@@ -1,16 +1,19 @@
 """提示词卡面板页后端（AstrBot 官方「插件 Pages」机制，≥4.24.1）。
 
-机制（对照实测过的 rumeng/陪伴插件写法）：
-- 前端放插件目录 ``pages/panel/index.html``，Dashboard 用受限 iframe 加载，
-  并注入 ``window.AstrBotPluginPage`` bridge；
-- 前端 ``bridge.apiGet/apiPost(path)`` → ``/api/v1/plugins/extensions/<插件名>/<path>``；
-- 后端 ``context.register_web_api(route, handler, methods, desc)``，
-  handler 是**无参数 async 函数**，请求经 ``astrbot.api.web.request`` 上下文对象读取；
-- route 必须带插件名前缀。本插件 metadata 名是 ``prompt_cards``、目录名是
-  ``astrbot_plugin_prompt_cards``，AstrBot 转发用哪个取决于版本 → 四组前缀全注册。
+实现方式对齐官方文档与社区成熟插件（keyou-weixiao）：插件**不绑任何端口、不跑
+自己的服务器**，只在 initialize 里 register_web_api 注册接口，页面经面板 bridge
+调用；静态资源全部放在 pages/panel/ 下用相对路径（AstrBot 带 asset_token 代理）。
+v1.5.4 前的独立 aiohttp 服务器已删除——其默认端口 6199 曾与 aiocqhttp 适配器的
+WS 端口冲突，导致 NapCat 连不上、bot 收不到消息。
 
-旧版 AstrBot 没有 register_web_api：跳过注册（面板页不可用），不影响插件本体；
-独立版控制台（webui.py 的 aiohttp 服务）仍在，作为旧环境的兜底。
+机制：
+- 前端 ``pages/panel/index.html`` 由 Dashboard 用受限 iframe 加载并注入
+  ``window.AstrBotPluginPage`` bridge（先 ``await ready()`` 再调 API）；
+- 前端 ``bridge.apiGet/apiPost(path)`` → ``/api/v1/plugins/extensions/<插件名>/<path>``；
+- 后端 ``context.register_web_api(route, handler, methods, desc)``，handler 是
+  无参数 async 函数，请求经 ``astrbot.api.web.request`` 上下文对象读取；
+- route 必须带插件名前缀。metadata 名（astrbot_plugin_prompt_cards）与 @register
+  名（prompt_cards）各注册一组，两个前缀都覆盖，谁命中都行。
 """
 from __future__ import annotations
 
@@ -26,12 +29,10 @@ except Exception:
     error_response = None  # type: ignore[assignment]
     _WEB_API = False
 
-# 面板页路由前缀：插件名/目录名 × 带不带 /page，四组全注册，宁可多几条不让页面 404
+# 面板页路由前缀：metadata 名与 @register 名各一组（不同版本转发用哪个有差异）
 PAGE_PREFIXES = (
-    "/prompt_cards/page",
-    "/astrbot_plugin_prompt_cards/page",
-    "/prompt_cards",
     "/astrbot_plugin_prompt_cards",
+    "/prompt_cards",
 )
 
 

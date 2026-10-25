@@ -2,6 +2,21 @@
 
 所有 notable changes 记录在本文件。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.5.4] - 2026-10-25
+
+### 修复
+- **端口 6199 冲突（严重）**：独立控制台默认端口与 aiocqhttp 平台适配器的默认 WS 端口
+  （6199）相同——启动顺序不利时插件抢先占口，适配器起不来、NapCat 连不上、
+  **bot 收不到任何消息**。
+
+### 变更
+- **彻底移除独立控制台（webui.py / aiohttp / 端口）**：WebUI 唯一入口为 AstrBot 面板页
+  （官方插件 Pages，≥4.24.1），插件不再绑任何端口。实现方式对齐官方文档与社区插件
+  （keyou-weixiao）的 Pages 惯例：`initialize` 里 `register_web_api` 注册接口（插件名前缀），
+  页面 `await bridge.ready()` 后经 bridge 调用，静态资源全部随页面相对路径分发
+  （字体移至 `pages/panel/fonts/`，修复面板里 `/fonts/...` 绝对路径 404）。
+- 配置项 `webui_enable/webui_host/webui_port` 删除（旧配置残留值被忽略）。
+
 ## [v1.5.3] - 2026-10-25
 
 ### 修复

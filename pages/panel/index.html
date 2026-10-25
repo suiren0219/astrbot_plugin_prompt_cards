@@ -26,10 +26,10 @@ html[data-ef-theme="light"]{
   --rule:#D9D9D6; --chip:#E6E6E2; --hatch:rgba(22,22,22,.20);
   --grid:rgba(22,22,22,.05); --scrim:rgba(22,22,22,.55);
 }
-/* 自托管 Saira（OFL），与页面同源，无外部请求 */
+/* 自托管 Saira（OFL），相对路径——面板沙箱里绝对路径会打到面板源上（404） */
 @font-face{
   font-family:"Saira"; font-style:normal; font-weight:100 900; font-display:swap;
-  src:url("/fonts/Saira.ttf") format("truetype");
+  src:url("fonts/Saira.ttf") format("truetype");
 }
 *{box-sizing:border-box;border-radius:0 !important;margin:0}
 html,body{height:100%}
@@ -400,7 +400,6 @@ const storage = (() => {
 })();
 /* 传输层：在 AstrBot 面板 iframe 里走官方 bridge；直接打开（独立控制台）走 fetch（无鉴权） */
 const PLUGIN_NAMES = ["prompt_cards", "astrbot_plugin_prompt_cards"];
-let MODE = null;            // "panel" | "standalone"
 let BRIDGE = null, EPSTYLE = null;
 let STATE = null;
 let EDIT = null; // null=新建, 否则原名字
@@ -430,15 +429,15 @@ async function waitForBridge(ms){
   }
   return getBridge();
 }
-/* ---- 面板通道：同一路由多种写法逐个试（Dashboard 拼前缀的方式随版本变化） ---- */
+/* ---- 面板通道：官方形态（无前缀无斜杠）优先，其余写法逐个兜底 ---- */
 function endpointCandidates(route){
   const clean = String(route).replace(/^\/+/, "");
   const out = [];
-  if (EPSTYLE === "page") out.push("page/" + clean);
   if (EPSTYLE === "bare") out.push(clean);
+  if (EPSTYLE === "page") out.push("page/" + clean);
   if (EPSTYLE === "slash") out.push("/" + clean);
-  out.push("page/" + clean, clean, "/" + clean);
-  for (const n of PLUGIN_NAMES) out.push(n + "/page/" + clean);
+  out.push(clean, "page/" + clean, "/" + clean);
+  for (const n of PLUGIN_NAMES) out.push(n + "/" + clean, n + "/page/" + clean);
   return [...new Set(out.filter(Boolean))];
 }
 function routeMissing(text){
@@ -485,30 +484,9 @@ function syncThemeFromBridge(){
         applyTheme(c.isDark ? "dark" : "light"); });
   }catch(e){ /* 主题跟随失败不影响功能 */ }
 }
-/* ---- 独立通道：webui.py 的 aiohttp 服务（旧版 AstrBot 或端口直连） ---- */
-const STANDALONE = {
-  "state":         ()  => ({method:"GET",    url:"/api/state"}),
-  "card":          ()  => ({method:"POST",   url:"/api/card"}),
-  "card/del":      n   => ({method:"DELETE", url:"/api/card/" + encodeURIComponent(n)}),
-  "session/clear": ()  => ({method:"POST",   url:"/api/session/clear"}),
-  "session/off":   ()  => ({method:"POST",   url:"/api/session/off"}),
-  "peek":          u   => ({method:"GET",    url:"/api/peek?umo=" + encodeURIComponent(u)}),
-  "gen":           ()  => ({method:"POST",   url:"/api/gen"}),
-};
-async function standaloneCall(route, arg, body){
-  const spec = STANDALONE[route](arg);
-  const r = await fetch(spec.url, {
-    method: spec.method,
-    headers: {"Content-Type":"application/json"},
-    body: spec.method === "GET" ? undefined : JSON.stringify(body || {})
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-  return j;
-}
+/* API 只走面板 bridge：插件不再有自己的服务器（端口冲突教训，见 v1.5.4） */
 async function api(route, opts = {}){
-  if (MODE === "panel") return bridgeCall(route, opts.method || "GET", opts.query, opts.body);
-  return standaloneCall(route, opts.arg, opts.body);
+  return bridgeCall(route, opts.method || "GET", opts.query, opts.body);
 }
 
 /* ---- 主题：默认跟随系统深色/浅色，手动切换后记住选择 ----
@@ -736,7 +714,7 @@ $("#genBtn").onclick = async () => {
   finally{ btn.disabled = false; btn.textContent = "开始提炼"; }
 };
 
-/* ---- 启动：面板 bridge 优先（免令牌），拿不到再走独立控制台（无鉴权） ---- */
+/* ---- 启动：只走面板 bridge（插件没有自己的服务器）；拿不到就给诊断面板 ---- */
 function showUnreachable(detail){
   $("#gate").classList.add("on");
   if (detail){ $("#gateErr").textContent = detail; $("#gateErr").hidden = false; }
@@ -745,7 +723,9 @@ $("#gateBtn").onclick = () => location.reload();
 async function boot(){
   const b = await waitForBridge(3000);
   if (usableBridge(b)){
-    MODE = "panel"; BRIDGE = b;
+    BRIDGE = b;
+    // 官方约定：调 API 前 await ready()，确保父窗口已就绪、context 已下发
+    try{ if (typeof BRIDGE.ready === "function") await BRIDGE.ready(); }catch(e){}
     syncThemeFromBridge();
     $("#gate").classList.remove("on");
     try{ await load(); }
@@ -755,26 +735,12 @@ async function boot(){
     }
     return;
   }
-  MODE = "standalone";
-  try{
-    STATE = await api("state");
-    renderState();
-    $("#gate").classList.remove("on");
-    return;
-  }catch(e){
-    showUnreachable("连接后端失败：" + e.message);
-  }
-  // 独立通道失败，最常见的两种情况：
-  // ① 在 AstrBot 面板里打开但 bridge 不存在（fetch 打到了面板自己的 API 上）；
-  // ② 控制台服务没启动 / 地址端口不对。把两种出路都写明白。
-  const host = esc(location.hostname || "127.0.0.1");
+  // bridge 不存在：AstrBot <4.24.1，或页面被脱离面板直接打开
   $("#gateMsg").innerHTML =
-    "没有连上插件的独立控制台后端。<br>" +
-    "若本页是在 AstrBot 面板里打开的：插件页面需要 <b>AstrBot ≥ 4.24.1</b>" +
-    "（升级后从「插件管理 → 提示词卡」打开）。<br>" +
-    "若是直接访问：请确认插件已启用、地址端口正确（默认 " +
-    "<a href=\"http://" + host + ":6199/\" target=\"_blank\">http://" + host +
-    ":6199/</a>，端口以插件配置 webui_port 为准）。";
+    "本页是 AstrBot 的插件页面，需要在 <b>AstrBot ≥ 4.24.1</b> 的面板里打开：" +
+    "WebUI → 插件管理 → 提示词卡 → 打开页面。<br>" +
+    "当前环境没有检测到面板 bridge（AstrBot 版本过旧，或页面被单独访问了）。";
+  $("#gateErr").hidden = true;
 }
 boot();
 </script>

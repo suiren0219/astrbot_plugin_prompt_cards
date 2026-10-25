@@ -68,12 +68,6 @@ try:
 except Exception as _e:  # 面板页加载失败不影响插件本体
     logger.error(f"[prompt_cards] page_api.py 导入失败，面板页不可用: {_e}")
 
-try:
-    webui_mod = _load_side_module("_prompt_cards_webui", "webui.py")
-except Exception as _e:  # webui 依赖缺失时只关控制台，不影响插件本体
-    webui_mod = None
-    logger.error(f"[prompt_cards] webui.py 导入失败，WebUI 不可用: {_e}")
-
 CARD_NAME_MAX = 32  # 卡片名字长度上限（不含内容），防止一整段话被当成名字
 
 # 首次运行的示例卡：只示范「语气/文风」类常规提示词的写法，可随意改删
@@ -184,12 +178,11 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.3")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.4")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config
-        self.webui = None
         self._cards: dict[str, dict] = {}    # 名字 -> {content, keywords, priority, enabled, ...}
         self._sessions: dict[str, dict] = {} # 会话origin -> {卡片名: {remaining, source}}
         self._load()
@@ -281,37 +274,16 @@ class PromptCardsPlugin(Star):
     async def initialize(self):
         logger.info("[prompt_cards] 插件已加载，卡片 %d 张，有启用状态的会话 %d 个",
                     len(self._cards), len(self._sessions))
-        # AstrBot ≥4.24.1：官方「插件 Pages」——面板里直接打开 pages/panel/，免端口免令牌
+        # WebUI 唯一入口：AstrBot 官方「插件 Pages」（≥4.24.1），经面板 bridge 调 API，
+        # 不绑任何端口——插件自己的服务器曾因默认端口 6199 与 aiocqhttp 适配器冲突
+        # 导致 NapCat 连不上（v1.5.4 起彻底移除）。
         if page_api_mod:
             try:
                 page_api_mod.CardPageApi(self, logger).register()
             except Exception as e:
                 logger.warning(f"[prompt_cards] 面板页路由注册失败: {e}")
-        await self._start_webui()
-
-    async def _start_webui(self):
-        """启动 Endfield 风格 WebUI 控制台（面板可关，无鉴权，默认只监听本机）。"""
-        if not webui_mod:
-            logger.warning("[prompt_cards] webui.py 加载失败，WebUI 不可用")
-            return
-        if not self._cfg_get("webui_enable", True):
-            logger.info("[prompt_cards] WebUI 已在面板中关闭")
-            return
-        host = str(self._cfg_get("webui_host", "127.0.0.1") or "127.0.0.1")
-        port = int(self._cfg_get("webui_port", 6199) or 6199)
-        self.webui = webui_mod.CardWebUI(self, host, port, logger)
-        try:
-            await self.webui.start()
-        except Exception as e:
-            self.webui = None
-            logger.warning(f"[prompt_cards] WebUI 启动失败（端口被占用？）: {e}")
-            return
-        logger.info("[prompt_cards] WebUI 已启动: http://%s:%d/（无鉴权，勿暴露到不可信网络）",
-                    host, port)
 
     async def terminate(self):
-        if self.webui:
-            await self.webui.stop()
         self._save()
 
     # ---------- 指令解析 ----------
