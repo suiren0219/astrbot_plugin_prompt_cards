@@ -179,6 +179,9 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
 .gate-box .tri2 i{flex:1}
 .gate-box h1{font-size:24px;font-weight:900;letter-spacing:.1em;margin:4px 0 6px}
 .gate-box p{font-size:12.5px;color:var(--ink2);line-height:1.7;margin-bottom:18px}
+.gate-box a{color:var(--signal)}
+.gate-err{margin:-8px 0 12px;padding:8px 12px;font-size:12.5px;line-height:1.7;
+  border:1px solid var(--danger);color:var(--danger);word-break:break-all}
 /* ===== 通知（黄旗） ===== */
 .toast{position:fixed;left:18px;bottom:18px;z-index:30;display:flex;flex-direction:column;gap:8px}
 .toast .t{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--rule);
@@ -368,8 +371,9 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
     <div class="tri2"><i style="background:var(--tri-1)"></i><i style="background:var(--tri-2)"></i><i style="background:var(--tri-3)"></i></div>
     <span class="eb">// Access</span>
     <h1>提示词卡控制台</h1>
-    <p>从 AstrBot 后台的插件页面打开时无需令牌。<br>直接访问本页（独立控制台）需输入接入令牌：启动日志里有，插件配置 webui_token 也可查看。</p>
+    <p id="gateMsg">从 AstrBot 后台的插件页面打开、或本机直接访问独立控制台时，无需令牌。<br>令牌仅在控制台监听非本机地址（如 0.0.0.0）时需要：见启动日志或插件配置 webui_token。</p>
     <div class="f"><input id="gateToken" type="password" placeholder="接入令牌" autocomplete="off"></div>
+    <div class="gate-err" id="gateErr" hidden></div>
     <button class="btn" id="gateBtn" style="width:100%;justify-content:center">进入</button>
   </div>
 </div>
@@ -709,14 +713,30 @@ $("#genBtn").onclick = async () => {
 
 /* ---- 启动：面板 bridge 优先（免令牌），拿不到再走独立控制台 ---- */
 async function tryEnter(t){
+  $("#gateErr").hidden = true;
   TOKEN = t; localStorage.setItem("pc_token", t);
   try{ await load(); $("#gate").classList.remove("on"); toast("已连接"); }
-  catch(e){ toast(e.message === "令牌无效" ? "令牌无效" : e.message); }
+  catch(e){
+    const invalid = e.message === "令牌无效";
+    // 气泡 3 秒就没了，像「没反应」；错误要留在令牌门上
+    $("#gateErr").textContent = invalid ? "令牌无效：请核对启动日志或插件配置里的 webui_token" : e.message;
+    toast(invalid ? "令牌无效" : e.message);
+  }
+}
+/* 本页身后是不是插件的独立控制台：拿假令牌探一次 /api/state，
+   只认我们自己的 401 形状——面板自己的 API/404 都不算 */
+async function standaloneBackendHere(){
+  try{
+    const r = await fetch("/api/state", {headers:{"Authorization":"Bearer __probe__"}});
+    if (r.status !== 401) return false;
+    const j = await r.json().catch(() => null);
+    return !!(j && j.error === "令牌无效");
+  }catch(e){ return false; }
 }
 $("#gateBtn").onclick = () => tryEnter($("#gateToken").value.trim());
 $("#gateToken").addEventListener("keydown", e => { if (e.key === "Enter") tryEnter(e.target.value.trim()); });
 async function boot(){
-  const b = await waitForBridge(1500);
+  const b = await waitForBridge(2500);
   if (usableBridge(b)){
     MODE = "panel"; BRIDGE = b;
     $("#gate").classList.remove("on");
@@ -725,6 +745,28 @@ async function boot(){
     return;
   }
   MODE = "standalone";
+  // 先匿名探一次：后端监听本机回环时不要求令牌，直接进，不弹令牌门
+  try{
+    STATE = await api("state");
+    renderState();
+    return;
+  }catch(e){ /* 401=需要令牌；其它=身后不是插件后端，下面说明 */ }
+  // 不是插件自己的后端（典型：在 AstrBot 面板 iframe 里但 bridge 不存在，
+  // fetch 打到了面板自己的 API 上）——明说原因与出路，别让用户对着令牌门打转
+  if (!(await standaloneBackendHere())){
+    const host = esc(location.hostname || "127.0.0.1");
+    $("#gateMsg").innerHTML =
+      "本页是在 AstrBot 面板里打开的，但没有检测到插件 bridge：插件页面需要 " +
+      "<b>AstrBot ≥ 4.24.1</b>（升级后从「插件管理 → 提示词卡」打开，免令牌）。<br>" +
+      "或访问独立控制台：<a href=\"http://" + host + ":6199/\" target=\"_blank\">" +
+      "http://" + host + ":6199/</a>（默认端口，以插件配置 webui_port 为准；" +
+      "服务器部署需把监听地址改为 0.0.0.0 并放行端口）。";
+    $("#gateToken").disabled = true;
+    $("#gateBtn").textContent = "重试";
+    $("#gateBtn").onclick = () => location.reload();
+    return;
+  }
+  // 后端要求令牌（监听地址不是回环，如 0.0.0.0）
   if (TOKEN) tryEnter(TOKEN); else showGate();
 }
 boot();

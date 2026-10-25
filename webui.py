@@ -1,10 +1,11 @@
 """提示词卡独立控制台（aiohttp，服务器直连场景与 AstrBot <4.24.1 的兜底）。
 
 * 仅在插件配置开启时随插件启动，默认只绑定 127.0.0.1；
-* 所有 /api/* 都要求 Authorization: Bearer <令牌>（面板 webui_token，
-  留空则插件首次启动自动生成并写入配置、打印到日志）；
+* 鉴权按监听地址定：回环地址（127.0.0.1/localhost/::1）免令牌——本机访问不再设门；
+  其余地址（如 0.0.0.0）所有 /api/* 要求 Authorization: Bearer <令牌>（面板 webui_token，
+  留空则启动时自动生成并写入配置、打印到日志）；
 * 页面本体与面板页共用 pages/panel/index.html（同一页面双通道：
-  面板里走官方 bridge，直连时走这里的 fetch+令牌）；
+  面板里走官方 bridge，直连时走这里的 fetch）；
 * 卡片校验/合并逻辑与面板页共用 page_api.apply_card_patch，避免两份规则漂移。
 """
 import hmac
@@ -23,6 +24,7 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(PLUGIN_DIR, "web")              # 字体等静态资源
 PANEL_DIR = os.path.join(PLUGIN_DIR, "pages", "panel") # 与面板页共用的页面
 MIME = {".html": "text/html", ".ttf": "font/ttf", ".txt": "text/plain"}
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def _dumps(data) -> str:
@@ -30,18 +32,22 @@ def _dumps(data) -> str:
 
 
 class CardWebUI:
-    def __init__(self, plugin, host: str, port: int, token: str, logger):
+    def __init__(self, plugin, host: str, port: int, token: str, logger,
+                 require_token: bool | None = None):
         self.plugin = plugin
         self.host = host or "127.0.0.1"
         self.port = int(port or 6199)
         self.token = token
         self.logger = logger
+        # 回环地址上的控制台不设令牌：本机访问免门，暴露到外层时才强制 Bearer
+        self.require_token = (self.host not in LOOPBACK_HOSTS) if require_token is None \
+            else bool(require_token)
         self.runner = None
         self._index_html = None
 
     # ---------- 生命周期 ----------
     async def start(self):
-        app = web.Application()
+        app = web.Application(middlewares=[self._auth_mw])
         app.router.add_get("/", self._index)
         app.router.add_get("/fonts/{name}", self._font)
         app.router.add_get("/api/state", self._state)
@@ -56,22 +62,22 @@ class CardWebUI:
         site = web.TCPSite(self.runner, self.host, self.port)
         await site.start()
 
+    @web.middleware
+    async def _auth_mw(self, request, handler):
+        """只拦 /api/*；页面与字体公开（不含数据）。令牌校验恒定时间比较。"""
+        if self.require_token and request.path.startswith("/api/"):
+            auth = request.headers.get("Authorization", "")
+            supplied = auth[7:].strip() if auth.startswith("Bearer ") else ""
+            if not hmac.compare_digest(supplied, self.token or ""):
+                return web.json_response({"error": "令牌无效"}, status=401)
+        return await handler(request)
+
     async def stop(self):
         if self.runner:
             await self.runner.cleanup()
         self.runner = None
 
-    # ---------- 鉴权与静态 ----------
-    def _ok(self, request) -> bool:
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return False
-        return hmac.compare_digest(auth[7:].strip(), self.token)
-
-    @staticmethod
-    def _deny():
-        return web.json_response({"error": "令牌无效"}, status=401)
-
+    # ---------- 静态 ----------
     async def _index(self, request):
         if self._index_html is None:
             with open(os.path.join(PANEL_DIR, "index.html"), "r", encoding="utf-8") as f:
@@ -90,8 +96,6 @@ class CardWebUI:
 
     # ---------- API ----------
     async def _state(self, request):
-        if not self._ok(request):
-            return self._deny()
         p = self.plugin
         stats = {
             "cards": len(p._cards),
@@ -105,8 +109,6 @@ class CardWebUI:
             dumps=_dumps)
 
     async def _save_card(self, request):
-        if not self._ok(request):
-            return self._deny()
         try:
             data = await request.json()
         except Exception:
@@ -122,8 +124,6 @@ class CardWebUI:
         return web.json_response({"ok": True, "name": name})
 
     async def _del_card(self, request):
-        if not self._ok(request):
-            return self._deny()
         name = request.match_info.get("name", "")
         p = self.plugin
         if name not in p._cards:
@@ -136,8 +136,6 @@ class CardWebUI:
         return web.json_response({"ok": True})
 
     async def _sess_clear(self, request):
-        if not self._ok(request):
-            return self._deny()
         try:
             data = await request.json()
         except Exception:
@@ -150,8 +148,6 @@ class CardWebUI:
         return web.json_response({"ok": True})
 
     async def _sess_off(self, request):
-        if not self._ok(request):
-            return self._deny()
         try:
             data = await request.json()
         except Exception:
@@ -164,8 +160,6 @@ class CardWebUI:
         return web.json_response({"ok": True})
 
     async def _peek(self, request):
-        if not self._ok(request):
-            return self._deny()
         p = self.plugin
         umo = request.query.get("umo", "")
         injection, names = p._build_injection(umo)
@@ -176,8 +170,6 @@ class CardWebUI:
             dumps=_dumps)
 
     async def _gen(self, request):
-        if not self._ok(request):
-            return self._deny()
         try:
             data = await request.json()
         except Exception:
