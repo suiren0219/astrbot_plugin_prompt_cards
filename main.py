@@ -69,6 +69,8 @@ except Exception as _e:  # 面板页加载失败不影响插件本体
     logger.error(f"[prompt_cards] page_api.py 导入失败，面板页不可用: {_e}")
 
 CARD_NAME_MAX = 32  # 卡片名字长度上限（不含内容），防止一整段话被当成名字
+CARD_REF_MAX_DEPTH = 5  # {{卡:名字}} 嵌套展开上限，防失控递归
+CARD_REF_RE = re.compile(r"\{\{卡[:：]\s*([^{}]{1,64}?)\s*}}")
 
 # 首次运行的示例卡：只示范「语气/文风」类常规提示词的写法，可随意改删
 SEED_CARDS = {
@@ -136,6 +138,11 @@ PRESETS = {
     "前提先行": {"category": "提示词优化", "content": "回答前先用一句话交代你依据的前提（默认的环境、版本、场景或用户身份），例如「默认你说的是 Windows 环境」；前提有出入时对方会纠正，再按新前提作答。"},
     "术语随解": {"category": "提示词优化", "content": "专业术语第一次出现时，紧跟一句大白话解释（放在括号里）；对方明显是内行时可以省略解释。"},
     "自检三问": {"category": "提示词优化", "content": "每次回复前自检：①有没有直接回应对方最新那条消息？②有没有夹带与问题无关的内容？③语气是否符合当前人格？发现问题先修正，再输出最终回复。"},
+    "嵌套组合": {"category": "提示词优化", "content": (
+        "{{卡:人格锁定}}\n{{卡:术语随解}}\n"
+        "【模板说明】本卡用 {{卡:名字}} 嵌套其他卡，注入时展开为对方内容——"
+        "只取内容本身，被嵌套卡的发挥度/长度等开关不随之生效；"
+        "把名字换成你自己的设定卡，就能把人格拆成可复用的组件自由拼装。")},
 }
 
 # 材料 → 角色卡 的转换指令：喂给用户当前配置的默认 LLM
@@ -178,7 +185,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.6.0")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.6.1")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -362,6 +369,27 @@ class PromptCardsPlugin(Star):
                  if card.get("enabled", True) and (card.get("global") or n in sess)}
         return sorted(names, key=lambda n: self._cards[n].get("priority", 50))
 
+    def _expand_card_refs(self, text: str, depth: int = 0, seen: tuple = ()) -> str:
+        """递归展开 {{卡:名字}} 嵌套引用：替换为被引用卡的当前内容。
+
+        * 引用只取内容——被引用卡的发挥度/长度/人设声明不随之生效，那些属于卡片本身；
+        * 已在展开链上的卡（含当前生效卡）再次被引用时保留占位符：它要么正在展开（环），
+          要么内容已在本次注入里（避免重复）；
+        * 引用不存在的卡保留占位符不静默吞掉，/卡 peek 与面板预览里肉眼可见。
+        """
+        if depth >= CARD_REF_MAX_DEPTH or "{{卡" not in text:
+            return text
+        seen_set = set(seen)
+
+        def _repl(m: re.Match) -> str:
+            name = m.group(1).strip()
+            if not name or name in seen_set or name not in self._cards:
+                return m.group(0)
+            inner = str(self._cards[name].get("content", "") or "")
+            return self._expand_card_refs(inner, depth + 1, tuple(seen_set | {name}))
+
+        return CARD_REF_RE.sub(_repl, text)
+
     def _build_injection(self, umo: str) -> tuple[str, list[str]]:
         """拼出实际注入文本，返回 (文本, 生效卡片名列表)。
 
@@ -370,6 +398,8 @@ class PromptCardsPlugin(Star):
         完全人设卡（mode=persona）会加一行优先级声明：AstrBot 的人格系统提示词
         在本插件注入之前（v4 起钩子晚于人格组装），两个身份并存时模型需要明确
         知道以卡为准；叠加卡（overlay，默认）不声明，与人格和平共处。
+        拼装后展开 {{卡:名字}} 嵌套引用（变量插值发生在之后，嵌套卡里的
+        {user} 等变量照常生效）。
         """
         names = self._active_names(umo)
         sep = str(self._cfg_get("separator", "\n\n") or "\n\n")
@@ -393,7 +423,8 @@ class PromptCardsPlugin(Star):
             if limit:
                 content += f"\n【输出长度】该卡生效期间，回复保持在 {limit} 字以内。"
             parts.append(content)
-        return sep.join(parts), names
+        text = sep.join(parts)
+        return self._expand_card_refs(text, seen=tuple(names)), names
 
     def _tick(self, umo: str):
         """关键词激活的卡片按条数倒计时；手动 /卡 on 的永不自动失效。"""
