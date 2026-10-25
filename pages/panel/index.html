@@ -218,6 +218,7 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
   <nav id="nav">
     <button data-view="cards" class="on">// Cards<i>卡片</i></button>
     <button data-view="sessions">// Sessions<i>会话</i></button>
+    <button data-view="providers">// Providers<i>提供商</i></button>
     <button data-view="gen">// Generate<i>生成</i></button>
   </nav>
   <div class="cmd-right">
@@ -240,11 +241,29 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
       <div class="sec-h">
         <span class="eb">// Library</span><b>卡片库</b>
         <span class="spacer"></span>
+        <button class="btn ghost" id="exportBtn">导出</button>
+        <button class="btn ghost" id="importBtn">导入</button>
         <button class="btn ghost" id="refreshBtn">刷新</button>
         <button class="btn" id="newBtn">新建</button>
       </div>
       <div class="rows" id="rows"></div>
       <div class="empty" id="rowsEmpty" style="display:none"><b>NO DATA / 暂无卡片</b>点右上「新建」，或到「生成」页让 AI 帮你写第一张。</div>
+    </div>
+  </section>
+
+  <!-- ===== 提供商调参 ===== -->
+  <section class="view" id="v-providers">
+    <div class="sec" style="margin-top:0">
+      <div class="sec-h">
+        <span class="eb">// LLM Tune</span><b>提供商调参</b>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="provRefresh">刷新</button>
+      </div>
+      <div class="hint" style="margin-bottom:14px">写入 AstrBot 提供商配置并<b>实时生效</b>（全局，所有会话共用，改完即存）。
+        温度走 custom_extra_body；Gemini 安全阈值是分类器拦截开关——能明显减少暧昧/亲密段落被误杀，
+        但管不到模型自身的政策。「暧昧模式」= 骚扰 + 露骨两项放行，其余不动。</div>
+      <div class="rows" id="provRows"></div>
+      <div class="empty" id="provEmpty" style="display:none"><b>NO DATA</b>没有读到提供商（当前 AstrBot 不支持或未配置）。</div>
     </div>
   </section>
 
@@ -321,22 +340,14 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
       <div class="hint" style="margin-top:6px">感性=情绪浓、感官与心理描写多；理性=克制精确、先结论后感受。</div>
     </div>
     <div class="f">
-      <div class="pair">
-        <div>
-          <label>Length / 回复长度<i>点档位或填数字</i></label>
-          <input id="dLen" type="number" min="20" placeholder="字数，≥20">
-          <div class="tog" style="margin-top:8px">
-            <button data-len="80">简短</button>
-            <button data-len="200">适中</button>
-            <button data-len="500">冗长</button>
-          </div>
-        </div>
-        <div>
-          <label>Temp / 温度<i>仅记录，暂不生效</i></label>
-          <input id="dTemp" type="number" step="0.1" min="0" max="2" placeholder="0~2">
-          <div class="hint" style="margin-top:8px">AstrBot 插件 API 暂不支持按会话下发温度；全局调温请在提供商 custom_extra_body 设置。</div>
-        </div>
+      <label>Length / 回复长度<i>点档位或填数字</i></label>
+      <input id="dLen" type="number" min="20" placeholder="字数，≥20">
+      <div class="tog" style="margin-top:8px">
+        <button data-len="80">简短</button>
+        <button data-len="200">适中</button>
+        <button data-len="500">冗长</button>
       </div>
+      <div class="hint" style="margin-top:8px">采样温度与 Gemini 安全阈值在「提供商」页调——那是提供商级配置，全局实时生效。</div>
     </div>
     <div class="f">
       <label>Adaptation / 人格适配<i>与 AstrBot 人格的关系</i></label>
@@ -365,7 +376,35 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
   </div>
 </aside>
 
-<!-- 连接失败诊断面板：连上后端就隐藏，只有独立通道失败时显示 -->
+<!-- 导入/导出抽屉 -->
+<aside class="drawer" id="ioDrawer">
+  <div class="drawer-h">
+    <span class="eb" id="ioMode">// Export</span>
+    <b id="ioTitle">导出</b>
+  </div>
+  <div class="drawer-b">
+    <div class="hint" id="ioHint" style="margin-bottom:12px"></div>
+    <div class="f" id="ioModeTog" style="display:none">
+      <label>Mode / 导入模式</label>
+      <div class="tog">
+        <button id="ioMerge" class="on">合并（同名覆盖）</button>
+        <button id="ioReplace">覆盖全部</button>
+      </div>
+      <div class="hint" style="margin-top:6px">覆盖=先清空现有卡片与会话启用状态，再导入；不合法的条目会跳过并列出。</div>
+    </div>
+    <div class="f">
+      <label id="ioTextLabel">JSON</label>
+      <textarea id="ioText" style="min-height:240px;font-family:Consolas,monospace;font-size:12px" spellcheck="false"></textarea>
+    </div>
+  </div>
+  <div class="drawer-f">
+    <button class="btn ghost" id="ioCopy">复制</button>
+    <button class="btn" id="ioAction">确定</button>
+    <button class="btn ghost" id="ioClose">关闭</button>
+  </div>
+</aside>
+
+<!-- 连接失败诊断面板：连上后端就隐藏，只有 bridge 不可用时显示 -->
 <div class="gate on" id="gate">
   <div class="gate-box">
     <div class="tri2"><i style="background:var(--tri-1)"></i><i style="background:var(--tri-2)"></i><i style="background:var(--tri-3)"></i></div>
@@ -511,13 +550,24 @@ else{
   });
 }
 
-/* ---- 视图切换 ---- */
+/* ---- 视图切换（切到会话/提供商时自动拉最新数据） ---- */
 $("#nav").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   document.querySelectorAll("#nav button").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll(".view").forEach(v => v.classList.remove("on"));
   $("#v-" + b.dataset.view).classList.add("on");
+  if (b.dataset.view === "sessions") load().catch(err => toast(err.message));
+  if (b.dataset.view === "providers") loadProviders().catch(err => toast(err.message));
 });
+
+/* umo → 人话：aiocqhttp:GroupMessage:123 → QQ群 123 */
+function prettyUmo(umo){
+  const seg = String(umo || "").split(":");
+  if (seg.length < 3) return String(umo || "");
+  const pf = seg[0] === "aiocqhttp" ? "QQ" : seg[0];
+  const kind = /group/i.test(seg[1]) ? "群" : /guild/i.test(seg[1]) ? "频道" : "";
+  return kind ? `${pf}${kind} ${seg.slice(2).join(":")}` : `${pf} ${seg.slice(2).join(":")}`;
+}
 
 /* ---- 渲染 ---- */
 function renderState(){
@@ -569,7 +619,7 @@ function renderState(){
              '<button data-off="' + esc(n) + '">停用</button></span>';
     }).join("");
     row.innerHTML =
-      '<div style="min-width:0"><div class="umo">' + esc(umo) + '</div>' +
+      '<div style="min-width:0"><div class="umo" title="' + esc(umo) + '">' + esc(prettyUmo(umo)) + '</div>' +
       '<div class="chips">' + (chips || '<span class="hint">无启用卡片</span>') + '</div></div>' +
       '<span class="meta"><button class="btn ghost" data-peek="' + esc(umo) + '" style="padding:6px 12px;font-size:12px">预览注入</button>' +
       '<button class="btn danger" data-clear="' + esc(umo) + '" style="padding:6px 12px;font-size:12px">清空</button></span>';
@@ -630,7 +680,6 @@ function openEditor(name){
   $("#dContent").value = c ? c.content : "";
   $("#dKw").value = c && c.keywords ? c.keywords.join(",") : "";
   $("#dPri").value = c ? (c.priority ?? 50) : 50;
-  $("#dTemp").value = c && c.temperature != null ? c.temperature : "";
   $("#dLen").value = c && c.length_limit ? c.length_limit : "";
   setTog("#dEnabled", "#dDisabled", c ? c.enabled !== false : true);
   setTog("#dGlobalOn", "#dGlobalOff", c ? !!c.global : false);
@@ -668,7 +717,6 @@ $("#dSave").onclick = async () => {
       name, content,
       keywords: $("#dKw").value.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
       priority: $("#dPri").value === "" ? 50 : Number($("#dPri").value),
-      temperature: $("#dTemp").value === "" ? null : Number($("#dTemp").value),
       length_limit: $("#dLen").value === "" ? null : Number($("#dLen").value),
       enabled: $("#dEnabled").classList.contains("on"),
       global: $("#dGlobalOn").classList.contains("on"),
@@ -713,6 +761,137 @@ $("#genBtn").onclick = async () => {
   }catch(e){ toast(e.message); }
   finally{ btn.disabled = false; btn.textContent = "开始提炼"; }
 };
+
+/* ---- 提供商调参（温度 / Gemini 安全阈值） ---- */
+let PROV = null;   // {providers, safety_keys, thresholds}
+let IO_MODE = "merge";
+const THRESHOLD_LABELS = {"BLOCK_NONE":"不屏蔽","BLOCK_ONLY_HIGH":"仅高危拦截",
+  "BLOCK_MEDIUM_AND_ABOVE":"中危以上拦截","BLOCK_LOW_AND_ABOVE":"低危即拦截"};
+
+function selHtml(key, val, thresholds){
+  return '<select data-safety="' + key + '">' +
+    '<option value=""' + (!val ? " selected" : "") + '>默认（跟随 API）</option>' +
+    thresholds.map(t => '<option value="' + t + '"' + (val === t ? " selected" : "") + '>' +
+      t + '（' + THRESHOLD_LABELS[t] + '）</option>').join("") + '</select>';
+}
+function renderProviders(){
+  const wrap = $("#provRows"); wrap.innerHTML = "";
+  const list = (PROV && PROV.providers) || [];
+  list.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "row sess"; row.style.cursor = "default";
+    row.style.animationDelay = Math.min(i, 18) * 38 + "ms";
+    const temp = p.custom_extra_body && p.custom_extra_body.temperature;
+    const gm = p.gm_safety_settings || {};
+    const editor =
+      '<div class="prov-editor">' +
+      '<div class="f"><label>温度 temperature<i>0~2，写入 custom_extra_body，全局实时生效</i></label>' +
+      '<input data-temp type="number" step="0.1" min="0" max="2" placeholder="留空=不设置" value="' +
+        esc(temp !== undefined && temp !== null ? temp : "") + '"></div>' +
+      (p.is_gemini
+        ? '<div class="f"><label>Gemini 安全阈值<i>分类器拦截开关，管不到模型自身政策</i></label>' +
+          PROV.safety_keys.map(k =>
+            '<div class="f" style="margin-bottom:8px"><label style="text-transform:none">' + k + '</label>' +
+            selHtml(k, gm[k], PROV.thresholds) + '</div>').join("") +
+          '<div class="tog" style="margin-top:4px">' +
+            '<button data-preset="flirty">暧昧模式（骚扰+露骨放行）</button>' +
+            '<button data-preset="clear">恢复默认</button></div></div>'
+        : '<div class="hint" style="margin-top:8px">该提供商没有可调的安全阈值（非 Gemini 或未暴露）。</div>') +
+      '</div>';
+    row.innerHTML =
+      '<div style="min-width:0"><div class="umo">' + esc(p.id) + '</div>' +
+      '<div class="chips">' +
+        '<span class="c">' + esc(p.type || "unknown") + '</span>' +
+        (p.enable ? '<span class="tag">启用</span>' : '<span class="tag dash">停用</span>') +
+        (temp !== undefined && temp !== null ? '<span class="c">温度 ' + esc(temp) + '</span>' : '') +
+        (p.is_gemini ? '<span class="tag">Gemini 阈值可调</span>' : '') +
+      '</div>' + editor + '</div>' +
+      '<span class="meta"><button class="btn" data-save="' + esc(p.id) + '" style="padding:6px 12px;font-size:12px">保存调参</button></span>';
+    row.querySelectorAll("select[data-safety]").forEach(s => {
+      s.style.cssText = "width:100%;padding:7px 8px;background:var(--paper);color:var(--ink);border:1px solid var(--rule)";
+    });
+    row.querySelectorAll("[data-preset]").forEach(b => b.onclick = () => {
+      row.querySelectorAll("select[data-safety]").forEach(s => {
+        if (b.dataset.preset === "clear") s.value = "";
+        else if (s.dataset.safety in {"harassment":1,"sexually_explicit":1}) s.value = "BLOCK_NONE";
+      });
+    });
+    row.querySelector("[data-save]").onclick = async ev => {
+      ev.stopPropagation();
+      const body = {provider_id: p.id};
+      const tIn = row.querySelector("input[data-temp]");
+      body.temperature = tIn && tIn.value !== "" ? Number(tIn.value) : null;
+      if (p.is_gemini){
+        const gm = {};
+        row.querySelectorAll("select[data-safety]").forEach(s => {
+          if (s.value) gm[s.dataset.safety] = s.value;
+        });
+        body.gm_safety = row.querySelector("select[data-safety]") ? gm : undefined;
+      }
+      try{
+        const r = await api("llm/tune", {method:"POST", body});
+        toast("已保存「" + p.id + "」，实时生效");
+        PROV.providers[PROV.providers.findIndex(x => x.id === p.id)] = r.provider;
+        renderProviders();
+      }catch(e){ toast(e.message); }
+    };
+    wrap.appendChild(row);
+  });
+  $("#provEmpty").style.display = list.length ? "none" : "block";
+  wrap.style.display = list.length ? "" : "none";
+}
+async function loadProviders(){
+  PROV = await api("providers");
+  renderProviders();
+}
+$("#provRefresh").onclick = () => loadProviders().catch(e => toast(e.message));
+
+/* ---- 导入 / 导出 ---- */
+function openIO(mode){
+  $("#ioMode").textContent = mode === "export" ? "// Export" : "// Import";
+  $("#ioTitle").textContent = mode === "export" ? "导出卡片" : "导入卡片";
+  $("#ioCopy").style.display = mode === "export" ? "" : "none";
+  $("#ioModeTog").style.display = mode === "import" ? "" : "none";
+  $("#ioAction").textContent = mode === "export" ? "重新生成" : "确认导入";
+  $("#ioText").readOnly = mode === "export";
+  $("#ioText").value = "";
+  $("#ioDrawer").classList.add("on");
+  return mode;
+}
+$("#exportBtn").onclick = async () => {
+  openIO("export");
+  $("#ioHint").textContent = "下方 JSON 包含全部卡片与会话启用状态；复制保存到本地，换 bot 时用「导入」粘回来。";
+  try{
+    const j = await api("export");
+    $("#ioText").value = JSON.stringify(j, null, 2);
+  }catch(e){ $("#ioHint").textContent = "导出失败：" + e.message; }
+};
+$("#ioText").onclick = () => { if ($("#ioText").readOnly) $("#ioText").select(); };
+$("#ioCopy").onclick = async () => {
+  const t = $("#ioText"); t.select();
+  try{ await navigator.clipboard.writeText(t.value); toast("已复制到剪贴板"); }
+  catch(e){ try{ document.execCommand("copy"); toast("已复制到剪贴板"); }catch(e2){ toast("复制失败，请手动全选复制"); } }
+};
+$("#importBtn").onclick = () => {
+  openIO("import");
+  $("#ioHint").textContent = "粘贴「导出」生成的 JSON。卡片校验规则与面板一致，不合法的条目会跳过。";
+};
+$("#ioMerge").onclick = () => { IO_MODE = "merge"; $("#ioMerge").classList.add("on"); $("#ioReplace").classList.remove("on"); };
+$("#ioReplace").onclick = () => { IO_MODE = "replace"; $("#ioReplace").classList.add("on"); $("#ioMerge").classList.remove("on"); };
+$("#ioAction").onclick = async () => {
+  if (!$("#ioText").value.trim()){ toast("先粘贴 JSON"); return; }
+  let data;
+  try{ data = JSON.parse($("#ioText").value); }
+  catch(e){ toast("JSON 解析失败：" + e.message); return; }
+  try{
+    const r = await api("import", {method:"POST", body:{cards: data.cards, sessions: data.sessions, mode: IO_MODE}});
+    toast(`已导入 ${r.imported} 张` + (r.skipped && r.skipped.length ? `，跳过 ${r.skipped.length} 条` : ""));
+    if (r.skipped && r.skipped.length) $("#ioHint").textContent = "跳过：" + r.skipped.join("；");
+    else $("#ioDrawer").classList.remove("on");
+    load().catch(e => toast(e.message));
+  }catch(e){ toast(e.message); }
+};
+$("#ioClose").onclick = () => $("#ioDrawer").classList.remove("on");
 
 /* ---- 启动：只走面板 bridge（插件没有自己的服务器）；拿不到就给诊断面板 ---- */
 function showUnreachable(detail){

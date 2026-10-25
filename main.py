@@ -178,7 +178,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.4")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.6.0")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -428,27 +428,44 @@ class PromptCardsPlugin(Star):
                 return card["temperature"], n
         return None, None
 
+    def _write_card(self, name: str, content: str, create: bool) -> str | None:
+        """命令路径写卡片内容：与面板共用 apply_card_patch 校验（名字规则、2 万字上限）。
+
+        page_api 加载失败时退回旧行为。返回错误信息，None=成功。
+        """
+        if page_api_mod:
+            _, err = page_api_mod.apply_card_patch(self, {"name": name, "content": content})
+            return err
+        if create:
+            self._cards[name] = {"content": content, "keywords": [],
+                                 "priority": 50, "enabled": True}
+        else:
+            self._cards[name]["content"] = content
+        return None
+
     # ---------- 材料 → 角色卡（LLM 转换） ----------
     @staticmethod
-    async def _url_safe(url: str) -> str | None:
-        """校验网址安全性：仅 http(s)，且解析出的 IP 不得是内网/回环地址（防 SSRF）。
+    async def _validate_url(url: str) -> tuple[str | None, list[str]]:
+        """校验网址安全性并固定解析结果：仅 http(s)，解析出的 IP 不得是内网/回环（防 SSRF）。
 
-        DNS 解析走 loop.getaddrinfo（在线程池执行）：getaddrinfo 是同步阻塞调用，
-        直接在事件循环里调会卡住整个 bot（解析慢时所有会话一起卡）。
+        返回 (url, 已验证的 IP 列表)。调用方拿 IP 建静态解析器连接，消除
+        「校验时公网、连接时被 rebinding 到内网」的窗口。DNS 解析走
+        loop.getaddrinfo（线程池），不阻塞事件循环。
         """
         try:
             parts = urlparse(url)
         except Exception:
-            return None
+            return None, []
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            return None
+            return None, []
         host = parts.hostname
         if host in ("localhost",) or host.endswith((".local", ".internal")):
-            return None
+            return None, []
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, None)
         except Exception:
-            return None
+            return None, []
+        ips = []
         for info in infos:
             ip = info[4][0]
             if (ip == "::1" or ip.startswith(("127.", "10.", "192.168.", "169.254.", "0.",
@@ -456,23 +473,53 @@ class PromptCardsPlugin(Star):
                     or (ip.startswith("172.") and len(ip.split(".")) > 1
                         and ip.split(".")[1].isdigit()
                         and 16 <= int(ip.split(".")[1]) <= 31)):
-                return None
-        return url
+                return None, []
+            if ip not in ips:
+                ips.append(ip)
+        return url, ips
+
+    @staticmethod
+    async def _url_safe(url: str) -> str | None:
+        """兼容旧调用：只判断网址是否安全。"""
+        return (await PromptCardsPlugin._validate_url(url))[0]
+
+    @staticmethod
+    def _pinned_connector(aiohttp, ips: list[str]):
+        """静态解析器：把该会话内所有 DNS 查询固定为已验证的 IP。"""
+        import socket as _socket
+
+        class _PinnedResolver(aiohttp.abc.AbstractResolver):
+            async def resolve(self, host, port=0, family=_socket.AF_INET):
+                return [{"hostname": host, "host": ip, "port": port,
+                         "family": _socket.AF_INET, "proto": 0,
+                         "flags": _socket.AI_NUMERICHOST}
+                        for ip in ips]
+
+            async def close(self):
+                pass
+
+        return aiohttp.TCPConnector(resolver=_PinnedResolver())
 
     async def _fetch_text(self, url: str) -> str:
         """抓取网页正文：去 script/style/标签/HTML 实体并压平空白，最多读 300KB。
 
-        不自动跟随重定向——每一跳都要重新过 _url_safe 的公网校验，
-        否则公网 URL 302 跳内网就能绕过 SSRF 防护。最多跟 3 跳。
+        不自动跟随重定向——每一跳重新校验公网并固定该跳的解析 IP
+        （防 302 绕过 + 防 DNS rebinding）。最多跟 3 跳。
         """
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=20)
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers,
-                                         auto_decompress=True) as session:
-            hops = 0
-            while True:
-                async with session.get(url, allow_redirects=False) as resp:
+        raw = None
+        hops = 0
+        while True:
+            safe, ips = await self._validate_url(url)
+            if not safe:
+                raise RuntimeError("重定向目标不在允许范围（内网/非 http(s)）" if hops
+                                   else "网址不可用（仅支持 http/https 公网地址）")
+            async with aiohttp.ClientSession(
+                    timeout=timeout, headers=headers, auto_decompress=True,
+                    connector=self._pinned_connector(aiohttp, ips)) as session:
+                async with session.get(safe, allow_redirects=False) as resp:
                     if resp.status in (301, 302, 303, 307, 308):
                         hops += 1
                         if hops > 3:
@@ -482,8 +529,6 @@ class PromptCardsPlugin(Star):
                             raise RuntimeError("重定向缺少 Location")
                         from urllib.parse import urljoin
                         url = urljoin(url, location)
-                        if not await self._url_safe(url):
-                            raise RuntimeError("重定向目标不在允许范围（内网/非 http(s)）")
                         continue
                     if resp.status != 200:
                         raise RuntimeError(f"HTTP {resp.status}")
@@ -522,7 +567,7 @@ class PromptCardsPlugin(Star):
         if provider is None:
             return None, "", "没有可用的默认 LLM 提供商，请先在 AstrBot 面板配置并启用一个提供商"
         if payload.startswith(("http://", "https://")):
-            safe = await self._url_safe(payload)
+            safe, _ips = await self._validate_url(payload)
             if not safe:
                 return None, "", "这个网址不可用（仅支持 http/https 公网地址）"
             try:
@@ -662,8 +707,10 @@ class PromptCardsPlugin(Star):
             if name in self._cards:
                 yield event.plain_result(f"已有卡片「{name}」，想改内容用 /卡 set {name} 新内容")
                 return
-            self._cards[name] = {"content": content, "keywords": [],
-                                 "priority": 50, "enabled": True}
+            err = self._write_card(name, content, create=True)
+            if err:
+                yield event.plain_result(f"❌ {err}")
+                return
             self._save()
             logger.info("[prompt_cards] %s 新建卡片「%s」（%d 字）", event.get_sender_id(), name, len(content))
             yield event.plain_result(f"✅ 已新建「{name}」（优先级50）。"
@@ -683,7 +730,10 @@ class PromptCardsPlugin(Star):
             if not content:
                 yield event.plain_result(f"用法：/卡 set {real} <新内容>")
                 return
-            self._cards[real]["content"] = content
+            err = self._write_card(real, content, create=False)
+            if err:
+                yield event.plain_result(f"❌ {err}")
+                return
             self._save()
             yield event.plain_result(f"✅ 已更新「{real}」")
             return

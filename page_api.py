@@ -161,6 +161,14 @@ def apply_card_patch(plugin, data: dict) -> tuple[dict | None, str | None]:
 class CardPageApi:
     """面板页后端：路由注册 + 各接口 handler（无参 async，AstrBot Pages 约定）。"""
 
+    # Gemini 安全阈值白名单（键与取值对照 gemini_source 的映射，防任意配置注入）
+    SAFETY_KEYS = ("harassment", "hate_speech", "sexually_explicit", "dangerous_content")
+    SAFETY_THRESHOLDS = ("BLOCK_NONE", "BLOCK_ONLY_HIGH",
+                         "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE")
+    # 暧昧模式预设：骚扰与露骨两项放行，其余不动（改的是 Gemini 分类器拦截，
+    # 不是模型自身政策——露骨内容 Gemini 仍可能拒答）
+    FLIRTY_PRESET = {"harassment": "BLOCK_NONE", "sexually_explicit": "BLOCK_NONE"}
+
     def __init__(self, plugin, logger=None):
         self.plugin = plugin
         self.logger = logger or getattr(plugin, "_log", None)
@@ -183,6 +191,10 @@ class CardPageApi:
             ("/session/off", self.h_sess_off, ["POST"], "提示词卡面板：停用会话卡片"),
             ("/peek", self.h_peek, ["GET"], "提示词卡面板：注入预览"),
             ("/gen", self.h_gen, ["POST"], "提示词卡面板：AI 提炼角色卡"),
+            ("/export", self.h_export, ["GET"], "提示词卡面板：导出全部数据"),
+            ("/import", self.h_import, ["POST"], "提示词卡面板：导入数据（合并/覆盖）"),
+            ("/providers", self.h_providers, ["GET"], "提示词卡面板：提供商列表与当前调参"),
+            ("/llm/tune", self.h_llm_tune, ["POST"], "提示词卡面板：温度与 Gemini 安全阈值调参"),
         ]
 
     def register(self) -> int:
@@ -270,3 +282,143 @@ class CardPageApi:
         if err:
             return page_err(err)
         return page_ok({"name": card_name, "content": content})
+
+    # ---------- 导出 / 导入 ----------
+    async def h_export(self):
+        from datetime import datetime
+        return page_ok({
+            "cards": self.plugin._cards,
+            "sessions": self.plugin._sessions,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+        })
+
+    async def h_import(self):
+        data = await read_json_body()
+        incoming_cards = data.get("cards")
+        incoming_sessions = data.get("sessions")
+        mode = data.get("mode") or "merge"
+        if mode not in ("merge", "replace"):
+            return page_err("mode 仅支持 merge/replace")
+        if not isinstance(incoming_cards, dict) and not isinstance(incoming_sessions, dict):
+            return page_err("导入内容为空：需要 cards 或 sessions 字段")
+
+        imported, skipped = 0, []
+        if isinstance(incoming_cards, dict):
+            if mode == "replace":
+                self.plugin._cards.clear()
+            for name, card in incoming_cards.items():
+                if not isinstance(card, dict):
+                    skipped.append(str(name))
+                    continue
+                payload = dict(card)
+                payload["name"] = str(name)
+                _, err = apply_card_patch(self.plugin, payload)
+                if err:
+                    skipped.append(f"{name}（{err}）")
+                    continue
+                imported += 1
+        if isinstance(incoming_sessions, dict):
+            clean_sessions = {}
+            for umo, cards in incoming_sessions.items():
+                if not isinstance(umo, str) or not isinstance(cards, dict):
+                    continue
+                clean = {n: v for n, v in cards.items()
+                         if isinstance(n, str) and isinstance(v, dict)}
+                clean_sessions[umo] = clean
+            if mode == "replace" or clean_sessions:
+                self.plugin._sessions = clean_sessions if mode == "replace" \
+                    else {**self.plugin._sessions, **clean_sessions}
+        self.plugin._save()
+        self._log("info", f"[prompt_cards] 面板导入 {imported} 张卡（模式 {mode}，跳过 {len(skipped)}）")
+        return page_ok({"imported": imported, "skipped": skipped, "mode": mode})
+
+    # ---------- 提供商调参（温度 / Gemini 安全阈值） ----------
+    def _pm(self):
+        """拿 ProviderManager；拿不到（旧版/异常）返回 None。"""
+        pm = getattr(self.plugin.context, "provider_manager", None) if self.plugin.context else None
+        return pm if callable(getattr(pm, "update_provider", None)) else None
+
+    def _provider_view(self, cfg: dict) -> dict:
+        ptype = str(cfg.get("type") or "")
+        pid = str(cfg.get("id") or "")
+        is_gemini = "gemini" in ptype.lower() or "gemini" in pid.lower()
+        return {
+            "id": pid,
+            "type": ptype,
+            "enable": bool(cfg.get("enable")),
+            "is_gemini": is_gemini,
+            "custom_extra_body": cfg.get("custom_extra_body")
+            if isinstance(cfg.get("custom_extra_body"), dict) else {},
+            "gm_safety_settings": cfg.get("gm_safety_settings")
+            if isinstance(cfg.get("gm_safety_settings"), dict) else None,
+        }
+
+    async def h_providers(self):
+        pm = self._pm()
+        if not pm:
+            return page_err("当前 AstrBot 无法访问提供商管理器")
+        try:
+            providers = [self._provider_view(c) for c in pm.providers_config]
+        except Exception as e:
+            return page_err(f"读取提供商失败：{type(e).__name__}: {e}")
+        return page_ok({"providers": providers,
+                        "safety_keys": list(self.SAFETY_KEYS),
+                        "thresholds": list(self.SAFETY_THRESHOLDS)})
+
+    async def h_llm_tune(self):
+        data = await read_json_body()
+        provider_id = str(data.get("provider_id") or "").strip()
+        if not provider_id:
+            return page_err("缺少 provider_id")
+        pm = self._pm()
+        if not pm:
+            return page_err("当前 AstrBot 无法访问提供商管理器")
+        try:
+            cfg = pm.get_provider_config_by_id(provider_id)
+        except Exception as e:
+            return page_err(f"读取提供商失败：{type(e).__name__}: {e}")
+        if not cfg:
+            return page_err("提供商不存在")
+
+        if "temperature" in data:
+            temp = data.get("temperature")
+            body = cfg.get("custom_extra_body") if isinstance(cfg.get("custom_extra_body"), dict) else {}
+            if temp is None or temp == "":
+                body.pop("temperature", None)
+            else:
+                try:
+                    temp = float(temp)
+                    if not 0 <= temp <= 2:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    return page_err("温度需在 0~2 之间")
+                body["temperature"] = temp
+            cfg["custom_extra_body"] = body
+
+        if "gm_safety" in data:
+            gm = data.get("gm_safety")
+            if gm is None:
+                cfg.pop("gm_safety_settings", None)
+            elif isinstance(gm, dict):
+                clean = {}
+                for key in self.SAFETY_KEYS:
+                    val = gm.get(key)
+                    if val is None or val == "":
+                        continue
+                    if val not in self.SAFETY_THRESHOLDS:
+                        return page_err(f"阈值取值不支持：{key}={val}")
+                    clean[key] = val
+                if clean:
+                    cfg["gm_safety_settings"] = clean
+                else:
+                    cfg.pop("gm_safety_settings", None)
+            else:
+                return page_err("gm_safety 需为对象或 null")
+
+        try:
+            await pm.update_provider(provider_id, cfg)
+        except Exception as e:
+            return page_err(f"写入提供商失败：{type(e).__name__}: {e}")
+        view = self._provider_view(pm.get_provider_config_by_id(provider_id) or {})
+        self._log("info", f"[prompt_cards] 面板调参提供商 {provider_id}（已实时生效）")
+        return page_ok({"provider": view})
