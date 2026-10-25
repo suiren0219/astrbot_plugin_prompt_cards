@@ -24,13 +24,13 @@
 关键词触发：监听所有消息，命中卡片关键词即在当前会话自动激活，
 N 条消息后自动失效（可配置），类似「世界书」的条件注入。
 """
+import asyncio
 import html as _html
 import importlib.util
 import json
 import os
 import re
 import secrets
-import socket
 import sys
 from datetime import datetime
 from urllib.parse import urlparse
@@ -45,7 +45,8 @@ except ImportError:  # 旧版本兼容
     from astrbot.core.provider.entities import LLMRequest as ProviderRequest  # type: ignore
 
 PLUGIN_NAME = "astrbot_plugin_prompt_cards"
-DATA_PATH = os.path.join("data", "config", f"{PLUGIN_NAME}.json")
+# 旧版（≤v1.5.0）把数据存在 data/config/ 下，违反 plugin_data 规范；仅用于迁移读取
+LEGACY_DATA_PATH = os.path.join("data", "config", f"{PLUGIN_NAME}.json")
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -184,7 +185,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.0")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.1")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -221,29 +222,60 @@ class PromptCardsPlugin(Star):
         return str(event.get_sender_id()) in ids
 
     # ---------- 数据读写 ----------
-    def _load(self):
+    @staticmethod
+    def _data_path() -> str:
+        """持久化文件路径：AstrBot 规范要求插件数据放 data/plugin_data/<插件名>/。
+
+        优先 StarTools.get_data_dir()（返回规范的 Path，能对准 AstrBot 实际数据目录）；
+        旧版没有该 API 时退回相对路径（AstrBot 以安装根为 CWD 运行，等效）。
+        """
         try:
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
+            from astrbot.api.star import StarTools
+            return str(StarTools.get_data_dir() / "cards.json")
+        except Exception:
+            return os.path.join("data", "plugin_data", PLUGIN_NAME, "cards.json")
+
+    def _load(self):
+        """读卡片与会话；旧位置（data/config/）有数据则迁移到 plugin_data 并立即落盘。"""
+        data, migrated = None, False
+        try:
+            with open(self._data_path(), "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self._cards = data.get("cards") or {}
-            self._sessions = data.get("sessions") or {}
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
+            try:
+                with open(LEGACY_DATA_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                migrated = True
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.error(f"[prompt_cards] 读取旧数据文件失败: {e}")
+        except json.JSONDecodeError:
+            logger.error(f"[prompt_cards] 数据文件损坏，重置: {self._data_path()}")
+        except Exception as e:
+            logger.error(f"[prompt_cards] 读取数据失败: {e}")
+        if data is None:
             self._cards = {name: dict(card) for name, card in SEED_CARDS.items()}
             self._sessions = {}
             self._save()
-        except Exception as e:
-            logger.error(f"[prompt_cards] 读取数据失败: {e}")
-            self._cards, self._sessions = {}, {}
+            return
+        self._cards = data.get("cards") or {}
+        self._sessions = data.get("sessions") or {}
+        if migrated:
+            logger.info("[prompt_cards] 检测到旧位置（data/config/）的数据，已迁移到 data/plugin_data/；"
+                        "旧文件不再使用，可自行删除")
+            self._save()
 
     def _save(self):
-        """原子保存，避免写一半被读坏。"""
+        """原子保存到 plugin_data 目录，避免写一半被读坏。"""
+        path = self._data_path()
         try:
-            os.makedirs(os.path.dirname(DATA_PATH) or ".", exist_ok=True)
-            tmp = DATA_PATH + ".tmp"
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"cards": self._cards, "sessions": self._sessions},
                           f, ensure_ascii=False, indent=2)
-            os.replace(tmp, DATA_PATH)
+            os.replace(tmp, path)
         except Exception as e:
             logger.error(f"[prompt_cards] 写入数据失败: {e}")
 
@@ -438,8 +470,12 @@ class PromptCardsPlugin(Star):
 
     # ---------- 材料 → 角色卡（LLM 转换） ----------
     @staticmethod
-    def _url_safe(url: str) -> str | None:
-        """校验网址安全性：仅 http(s)，且解析出的 IP 不得是内网/回环地址（防 SSRF）。"""
+    async def _url_safe(url: str) -> str | None:
+        """校验网址安全性：仅 http(s)，且解析出的 IP 不得是内网/回环地址（防 SSRF）。
+
+        DNS 解析走 loop.getaddrinfo（在线程池执行）：getaddrinfo 是同步阻塞调用，
+        直接在事件循环里调会卡住整个 bot（解析慢时所有会话一起卡）。
+        """
         try:
             parts = urlparse(url)
         except Exception:
@@ -450,7 +486,7 @@ class PromptCardsPlugin(Star):
         if host in ("localhost",) or host.endswith((".local", ".internal")):
             return None
         try:
-            infos = socket.getaddrinfo(host, None)
+            infos = await asyncio.get_running_loop().getaddrinfo(host, None)
         except Exception:
             return None
         for info in infos:
@@ -486,7 +522,7 @@ class PromptCardsPlugin(Star):
                             raise RuntimeError("重定向缺少 Location")
                         from urllib.parse import urljoin
                         url = urljoin(url, location)
-                        if not self._url_safe(url):
+                        if not await self._url_safe(url):
                             raise RuntimeError("重定向目标不在允许范围（内网/非 http(s)）")
                         continue
                     if resp.status != 200:
@@ -526,7 +562,7 @@ class PromptCardsPlugin(Star):
         if provider is None:
             return None, "", "没有可用的默认 LLM 提供商，请先在 AstrBot 面板配置并启用一个提供商"
         if payload.startswith(("http://", "https://")):
-            safe = self._url_safe(payload)
+            safe = await self._url_safe(payload)
             if not safe:
                 return None, "", "这个网址不可用（仅支持 http/https 公网地址）"
             try:

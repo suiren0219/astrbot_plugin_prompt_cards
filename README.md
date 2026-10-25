@@ -178,8 +178,13 @@ AstrBot 各版本（含 v4）的插件 API 都**不支持**按请求下发采样
 
 ## 数据
 
-卡片与会话启用状态保存在 `data/config/astrbot_plugin_prompt_cards.json`，
-可直接编辑（注意 JSON 格式），删除后重启会重新生成两张示例卡。
+卡片与会话启用状态保存在 AstrBot 插件数据目录：
+`data/plugin_data/astrbot_plugin_prompt_cards/cards.json`（路径经
+`StarTools.get_data_dir()` 解析，自定义数据目录时自动对准），可直接编辑
+（注意 JSON 格式），删除后重启会重新生成两张示例卡。
+
+v1.5.0 及之前版本的数据在 `data/config/astrbot_plugin_prompt_cards.json`，
+升级后**首次启动自动迁移**到新位置，旧文件不再使用、可自行删除。
 
 ## 更新日志
 

@@ -2,6 +2,17 @@
 
 所有 notable changes 记录在本文件。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.5.1] - 2026-10-25
+
+### 修复
+- **数据持久化迁到 `data/plugin_data/`（插件数据规范）**：卡片与会话改存
+  `data/plugin_data/astrbot_plugin_prompt_cards/cards.json`（优先 `StarTools.get_data_dir()`
+  解析，旧版 AstrBot 退回相对路径）；检测到旧位置 `data/config/astrbot_plugin_prompt_cards.json`
+  的数据时自动迁移并立即落盘，旧文件不再写入。
+- **DNS 解析改为异步**：`_url_safe` 改用 `loop.getaddrinfo`（线程池执行），不再在
+  `/卡 生成`、WebUI 生成等 async 路径里用同步 `socket.getaddrinfo` 阻塞事件循环
+  （解析慢时整个 bot 会被卡住）。
+
 ## [v1.5.0] - 2026-10-25
 
 ### 新增
