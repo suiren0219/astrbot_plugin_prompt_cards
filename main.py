@@ -30,7 +30,6 @@ import importlib.util
 import json
 import os
 import re
-import secrets
 import sys
 from datetime import datetime
 from urllib.parse import urlparse
@@ -185,7 +184,7 @@ TONE_ALIASES = {"理性": "理性", "感性": "感性", "均衡": "均衡",
                 "rational": "理性", "emotional": "感性", "感性模式": "感性", "理性模式": "理性"}
 
 
-@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.1")
+@register("prompt_cards", "suiren0219", "提示词卡：人格/风格提示词卡片化，按会话注入与关键词触发", "v1.5.2")
 class PromptCardsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -291,11 +290,7 @@ class PromptCardsPlugin(Star):
         await self._start_webui()
 
     async def _start_webui(self):
-        """启动 Endfield 风格 WebUI 控制台（面板可关）。
-
-        回环地址（127.0.0.1 等）免令牌；其余监听地址（如 0.0.0.0）必须 Bearer 令牌，
-        留空则自动生成并写回配置。
-        """
+        """启动 Endfield 风格 WebUI 控制台（面板可关，无鉴权，默认只监听本机）。"""
         if not webui_mod:
             logger.warning("[prompt_cards] webui.py 加载失败，WebUI 不可用")
             return
@@ -303,31 +298,16 @@ class PromptCardsPlugin(Star):
             logger.info("[prompt_cards] WebUI 已在面板中关闭")
             return
         host = str(self._cfg_get("webui_host", "127.0.0.1") or "127.0.0.1")
-        loopback = host in ("127.0.0.1", "localhost", "::1")
-        token = str(self._cfg_get("webui_token", "") or "")
-        if not loopback and not token:
-            token = secrets.token_hex(8)
-            try:
-                if self.config is not None:
-                    if isinstance(self.config.get("webui"), dict):
-                        self.config["webui"]["webui_token"] = token
-                    else:
-                        self.config["webui_token"] = token
-                    self.config.save_config()
-            except Exception as e:
-                logger.warning(f"[prompt_cards] webui_token 写回配置失败: {e}")
         port = int(self._cfg_get("webui_port", 6199) or 6199)
-        self.webui = webui_mod.CardWebUI(self, host, port, token, logger)
+        self.webui = webui_mod.CardWebUI(self, host, port, logger)
         try:
             await self.webui.start()
         except Exception as e:
             self.webui = None
             logger.warning(f"[prompt_cards] WebUI 启动失败（端口被占用？）: {e}")
             return
-        if loopback:
-            logger.info("[prompt_cards] WebUI 已启动: http://%s:%d/（本机访问免令牌）", host, port)
-        else:
-            logger.info("[prompt_cards] WebUI 已启动: http://%s:%d/  接入令牌: %s", host, port, token)
+        logger.info("[prompt_cards] WebUI 已启动: http://%s:%d/（无鉴权，勿暴露到不可信网络）",
+                    host, port)
 
     async def terminate(self):
         if self.webui:

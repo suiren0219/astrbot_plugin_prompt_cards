@@ -1,14 +1,12 @@
 """提示词卡独立控制台（aiohttp，服务器直连场景与 AstrBot <4.24.1 的兜底）。
 
 * 仅在插件配置开启时随插件启动，默认只绑定 127.0.0.1；
-* 鉴权按监听地址定：回环地址（127.0.0.1/localhost/::1）免令牌——本机访问不再设门；
-  其余地址（如 0.0.0.0）所有 /api/* 要求 Authorization: Bearer <令牌>（面板 webui_token，
-  留空则启动时自动生成并写入配置、打印到日志）；
+* 无鉴权（作者决定）：接口只能读写提示词卡片、清空会话启用状态、调用一次
+  LLM 提炼（有 SSRF 防护）。**不要把监听地址改成 0.0.0.0 暴露到不可信网络**；
 * 页面本体与面板页共用 pages/panel/index.html（同一页面双通道：
   面板里走官方 bridge，直连时走这里的 fetch）；
 * 卡片校验/合并逻辑与面板页共用 page_api.apply_card_patch，避免两份规则漂移。
 """
-import hmac
 import json
 import os
 import sys
@@ -24,7 +22,6 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(PLUGIN_DIR, "web")              # 字体等静态资源
 PANEL_DIR = os.path.join(PLUGIN_DIR, "pages", "panel") # 与面板页共用的页面
 MIME = {".html": "text/html", ".ttf": "font/ttf", ".txt": "text/plain"}
-LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def _dumps(data) -> str:
@@ -32,22 +29,17 @@ def _dumps(data) -> str:
 
 
 class CardWebUI:
-    def __init__(self, plugin, host: str, port: int, token: str, logger,
-                 require_token: bool | None = None):
+    def __init__(self, plugin, host: str, port: int, logger):
         self.plugin = plugin
         self.host = host or "127.0.0.1"
         self.port = int(port or 6199)
-        self.token = token
         self.logger = logger
-        # 回环地址上的控制台不设令牌：本机访问免门，暴露到外层时才强制 Bearer
-        self.require_token = (self.host not in LOOPBACK_HOSTS) if require_token is None \
-            else bool(require_token)
         self.runner = None
         self._index_html = None
 
     # ---------- 生命周期 ----------
     async def start(self):
-        app = web.Application(middlewares=[self._auth_mw])
+        app = web.Application()
         app.router.add_get("/", self._index)
         app.router.add_get("/fonts/{name}", self._font)
         app.router.add_get("/api/state", self._state)
@@ -61,16 +53,6 @@ class CardWebUI:
         await self.runner.setup()
         site = web.TCPSite(self.runner, self.host, self.port)
         await site.start()
-
-    @web.middleware
-    async def _auth_mw(self, request, handler):
-        """只拦 /api/*；页面与字体公开（不含数据）。令牌校验恒定时间比较。"""
-        if self.require_token and request.path.startswith("/api/"):
-            auth = request.headers.get("Authorization", "")
-            supplied = auth[7:].strip() if auth.startswith("Bearer ") else ""
-            if not hmac.compare_digest(supplied, self.token or ""):
-                return web.json_response({"error": "令牌无效"}, status=401)
-        return await handler(request)
 
     async def stop(self):
         if self.runner:

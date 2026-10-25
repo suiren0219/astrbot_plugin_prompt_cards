@@ -167,7 +167,7 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
 .tog{display:inline-flex;border:1px solid var(--ink)}
 .tog button{flex:1;padding:7px 14px;font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--ink2)}
 .tog button.on{background:var(--signal);color:var(--on-signal)}
-/* ===== 令牌门 ===== */
+/* ===== 连接诊断面板 ===== */
 .gate{position:fixed;inset:0;z-index:20;background:var(--paper);display:none;
   align-items:center;justify-content:center}
 .gate.on{display:flex}
@@ -365,16 +365,15 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
   </div>
 </aside>
 
-<!-- 令牌门 -->
+<!-- 连接失败诊断面板：连上后端就隐藏，只有独立通道失败时显示 -->
 <div class="gate on" id="gate">
   <div class="gate-box">
     <div class="tri2"><i style="background:var(--tri-1)"></i><i style="background:var(--tri-2)"></i><i style="background:var(--tri-3)"></i></div>
-    <span class="eb">// Access</span>
+    <span class="eb">// Connection</span>
     <h1>提示词卡控制台</h1>
-    <p id="gateMsg">从 AstrBot 后台的插件页面打开、或本机直接访问独立控制台时，无需令牌。<br>令牌仅在控制台监听非本机地址（如 0.0.0.0）时需要：见启动日志或插件配置 webui_token。</p>
-    <div class="f"><input id="gateToken" type="password" placeholder="接入令牌" autocomplete="off"></div>
+    <p id="gateMsg">正在连接后端……</p>
     <div class="gate-err" id="gateErr" hidden></div>
-    <button class="btn" id="gateBtn" style="width:100%;justify-content:center">进入</button>
+    <button class="btn" id="gateBtn" style="width:100%;justify-content:center">重试</button>
   </div>
 </div>
 
@@ -384,11 +383,10 @@ main{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:26px 22p
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-/* 传输层：在 AstrBot 面板 iframe 里走官方 bridge；直接打开（独立控制台）走 fetch+令牌 */
+/* 传输层：在 AstrBot 面板 iframe 里走官方 bridge；直接打开（独立控制台）走 fetch（无鉴权） */
 const PLUGIN_NAMES = ["prompt_cards", "astrbot_plugin_prompt_cards"];
 let MODE = null;            // "panel" | "standalone"
 let BRIDGE = null, EPSTYLE = null;
-let TOKEN = localStorage.getItem("pc_token") || "";
 let STATE = null;
 let EDIT = null; // null=新建, 否则原名字
 
@@ -472,10 +470,9 @@ async function standaloneCall(route, arg, body){
   const spec = STANDALONE[route](arg);
   const r = await fetch(spec.url, {
     method: spec.method,
-    headers: {"Content-Type":"application/json","Authorization":"Bearer " + TOKEN},
+    headers: {"Content-Type":"application/json"},
     body: spec.method === "GET" ? undefined : JSON.stringify(body || {})
   });
-  if (r.status === 401){ $("#gate").classList.add("on"); throw new Error("令牌无效"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
   return j;
@@ -484,7 +481,6 @@ async function api(route, opts = {}){
   if (MODE === "panel") return bridgeCall(route, opts.method || "GET", opts.query, opts.body);
   return standaloneCall(route, opts.arg, opts.body);
 }
-function showGate(){ $("#gate").classList.add("on"); $("#gateToken").focus(); }
 
 /* ---- 主题：默认跟随系统深色/浅色，手动切换后记住选择 ----
    存储键带 v2：旧原型页在同一端口存过 pc_theme=light，沿用会把用户钉死在亮色 */
@@ -606,7 +602,7 @@ function renderState(){
   $("#sessEmpty").style.display = umos.length ? "none" : "block";
   sr.style.display = umos.length ? "" : "none";
 }
-/* 错误向上抛：401 时独立通道已弹令牌门，调用方负责提示；吞掉会让「已连接」盖在失败上 */
+/* 错误向上抛给调用方提示；吞掉会让「成功」盖在失败上 */
 async function load(){
   STATE = await api("state");
   renderState();
@@ -711,30 +707,12 @@ $("#genBtn").onclick = async () => {
   finally{ btn.disabled = false; btn.textContent = "开始提炼"; }
 };
 
-/* ---- 启动：面板 bridge 优先（免令牌），拿不到再走独立控制台 ---- */
-async function tryEnter(t){
-  $("#gateErr").hidden = true;
-  TOKEN = t; localStorage.setItem("pc_token", t);
-  try{ await load(); $("#gate").classList.remove("on"); toast("已连接"); }
-  catch(e){
-    const invalid = e.message === "令牌无效";
-    // 气泡 3 秒就没了，像「没反应」；错误要留在令牌门上
-    $("#gateErr").textContent = invalid ? "令牌无效：请核对启动日志或插件配置里的 webui_token" : e.message;
-    toast(invalid ? "令牌无效" : e.message);
-  }
+/* ---- 启动：面板 bridge 优先（免令牌），拿不到再走独立控制台（无鉴权） ---- */
+function showUnreachable(detail){
+  $("#gate").classList.add("on");
+  if (detail){ $("#gateErr").textContent = detail; $("#gateErr").hidden = false; }
 }
-/* 本页身后是不是插件的独立控制台：拿假令牌探一次 /api/state，
-   只认我们自己的 401 形状——面板自己的 API/404 都不算 */
-async function standaloneBackendHere(){
-  try{
-    const r = await fetch("/api/state", {headers:{"Authorization":"Bearer __probe__"}});
-    if (r.status !== 401) return false;
-    const j = await r.json().catch(() => null);
-    return !!(j && j.error === "令牌无效");
-  }catch(e){ return false; }
-}
-$("#gateBtn").onclick = () => tryEnter($("#gateToken").value.trim());
-$("#gateToken").addEventListener("keydown", e => { if (e.key === "Enter") tryEnter(e.target.value.trim()); });
+$("#gateBtn").onclick = () => location.reload();
 async function boot(){
   const b = await waitForBridge(2500);
   if (usableBridge(b)){
@@ -745,29 +723,25 @@ async function boot(){
     return;
   }
   MODE = "standalone";
-  // 先匿名探一次：后端监听本机回环时不要求令牌，直接进，不弹令牌门
   try{
     STATE = await api("state");
     renderState();
+    $("#gate").classList.remove("on");
     return;
-  }catch(e){ /* 401=需要令牌；其它=身后不是插件后端，下面说明 */ }
-  // 不是插件自己的后端（典型：在 AstrBot 面板 iframe 里但 bridge 不存在，
-  // fetch 打到了面板自己的 API 上）——明说原因与出路，别让用户对着令牌门打转
-  if (!(await standaloneBackendHere())){
-    const host = esc(location.hostname || "127.0.0.1");
-    $("#gateMsg").innerHTML =
-      "本页是在 AstrBot 面板里打开的，但没有检测到插件 bridge：插件页面需要 " +
-      "<b>AstrBot ≥ 4.24.1</b>（升级后从「插件管理 → 提示词卡」打开，免令牌）。<br>" +
-      "或访问独立控制台：<a href=\"http://" + host + ":6199/\" target=\"_blank\">" +
-      "http://" + host + ":6199/</a>（默认端口，以插件配置 webui_port 为准；" +
-      "服务器部署需把监听地址改为 0.0.0.0 并放行端口）。";
-    $("#gateToken").disabled = true;
-    $("#gateBtn").textContent = "重试";
-    $("#gateBtn").onclick = () => location.reload();
-    return;
+  }catch(e){
+    showUnreachable("连接后端失败：" + e.message);
   }
-  // 后端要求令牌（监听地址不是回环，如 0.0.0.0）
-  if (TOKEN) tryEnter(TOKEN); else showGate();
+  // 独立通道失败，最常见的两种情况：
+  // ① 在 AstrBot 面板里打开但 bridge 不存在（fetch 打到了面板自己的 API 上）；
+  // ② 控制台服务没启动 / 地址端口不对。把两种出路都写明白。
+  const host = esc(location.hostname || "127.0.0.1");
+  $("#gateMsg").innerHTML =
+    "没有连上插件的独立控制台后端。<br>" +
+    "若本页是在 AstrBot 面板里打开的：插件页面需要 <b>AstrBot ≥ 4.24.1</b>" +
+    "（升级后从「插件管理 → 提示词卡」打开）。<br>" +
+    "若是直接访问：请确认插件已启用、地址端口正确（默认 " +
+    "<a href=\"http://" + host + ":6199/\" target=\"_blank\">http://" + host +
+    ":6199/</a>，端口以插件配置 webui_port 为准）。";
 }
 boot();
 </script>
