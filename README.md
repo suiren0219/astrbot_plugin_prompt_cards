@@ -218,3 +218,9 @@ v1.5.0 及之前版本的数据在 `data/config/astrbot_plugin_prompt_cards.json
 
 **不同群想用不同人格？**
 卡片按会话（群）独立启用，各自 `/卡 on` 需要的卡即可；`/卡 clear` 清空本会话。
+
+## 许可证
+
+本项目以 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）开源。
+
+允许自由使用、学习、修改及商业分发；若分发修改版，或以网络服务形式向他人提供本项目或修改版，须同样以 AGPL-3.0 公开完整对应源代码。协议全文见 [LICENSE](LICENSE)。
